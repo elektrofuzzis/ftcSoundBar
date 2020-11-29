@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="de" xml:lang="de" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+
+<meta name="encoding" content="utf-8">
+
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" type="image/x-icon" href="favicon.ico" sizes="any">
+
+<!-- Chrome, Firefox OS and Opera -->
+<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="black">
+
+<!-- Windows Phone -->
+<meta name="msapplication-navbutton-color" content="black">
+
+<!-- iOS Safari -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>ftcSoundBar</title>
+
+</head>
+
+<body>
+
+<script>
+
+"use strict";
+
+function post( url, data ) {
+
+  const req = new XMLHttpRequest();
+
+  req.addEventListener('readystatechange', function() {
+    if (this.readyState === this.DONE) {
+      console.log(this.responseText);
+    }
+  })
+
+  req.open('POST', url );
+  req.setRequestHeader('Content-type','application/json; charset=utf-8');
+
+  req.send(data);
+
+}
+
+function save_config(hostname) {
+
+  var wifi_ssid     = document.getElementById("wifi_ssid").value;
+  var wifi_password = document.getElementById("wifi_password").value; 
+  var txt_ap_mode   = document.getElementById("txt_ap_mode").checked;
+ 
+  var data = JSON.stringify({
+    wifi_ssid: new String(wifi_ssid),
+    wifi_password: new String(wifi_password),
+    txt_ap_mode: new String(txt_ap_mode)
+  });
+  
+  post( 'api/v1/config', data );
+
+  confirm("Configuration saved! Please wait for rebooting the  device..")
+  
+  location.reload(true);
+
+}
+
+function ota() {
+
+  var data = JSON.stringify({
+    ota: 1
+  });
+
+  post( 'api/v1/ota', data );
+  
+  confirm("OTA in progress! Please wait for rebooting the device..")
+  
+  location.reload(true);
+
+}
+
+function play( t ) {
+  var play = document.getElementById("play");
+  var stop = document.getElementById("stop");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+  
+  var data = JSON.stringify({
+    track: t
+  });
+  
+  post( 'api/v1/track/play', data );
+  
+}
+
+function volume( delta ) {
+
+  var data = JSON.stringify({
+    relvolume: delta
+  });
+  
+  post( 'api/v1/volume', data );
+  
+}
+
+function playTrack() {
+  var play = document.getElementById("play");
+  var stop = document.getElementById("stop");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+
+  post( "api/v1/track/play", "{}");
+
+}
+
+function stopTrack() {
+  var play    = document.getElementById("play");
+  var stop    = document.getElementById("stop");
+  var shuffle = document.getElementById("shuffle");
+  var repeat  = document.getElementById("repeat");
+    
+  stop.style.display = "none";
+  play.style.display = "block";
+  
+  shuffle.style.fill = "#989898";
+  repeat.style.fill  = "#989898";
+
+  post( "api/v1/track/stop", "{}");
+
+}
+
+function modeRepeat() {
+  var play    = document.getElementById("play");
+  var stop    = document.getElementById("stop");
+  var shuffle = document.getElementById("shuffle");
+  var repeat  = document.getElementById("repeat");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+  
+  repeat.style.fill  = "white";
+  shuffle.style.fill = "#989898";
+
+  var data = JSON.stringify({
+    mode: 2
+  });
+
+  post( "api/v1/mode", data );
+
+}
+
+function modeShuffle() {
+  var play    = document.getElementById("play");
+  var stop    = document.getElementById("stop");
+  var shuffle = document.getElementById("shuffle");
+  var repeat  = document.getElementById("repeat");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+
+  shuffle.style.fill = "white";
+  repeat.style.fill  = "#989898";
+
+  var data = JSON.stringify({
+    mode: 1
+  });
+
+  post( "api/v1/mode", data );
+
+}
+
+function nextTrack() {
+  var play    = document.getElementById("play");
+  var stop    = document.getElementById("stop");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+
+  post("/api/v1/track/next","{}" );
+
+}
+
+function previousTrack() {
+  var play    = document.getElementById("play");
+  var stop    = document.getElementById("stop");
+  
+  play.style.display = "none";
+  stop.style.display = "block";
+
+  post("/api/v1/track/previous","{}" );
+
+}
+
+</script>
+
+<table>
+  <tr height="20"><td></td></tr>
+  <tr><td><a href="/"><img src="img/ftcsoundbarlogo.svg" height="250"></img></a></td></tr>
+</table>
+<hr>
