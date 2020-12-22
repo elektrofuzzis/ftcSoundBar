@@ -14,51 +14,63 @@
  *
  ****************************************************************************************/
 
-#include "esp_wifi.h"
-#include "esp_event_loop.h"
-#include "nvs_flash.h"
-#include "esp_http_client.h"
-#include "esp_log.h"
-#include "audio_pipeline.h"
-#include "fatfs_stream.h"
-#include "i2s_stream.h"
-#include "mp3_decoder.h"
-#include "filter_resample.h"
-#include "esp_flash_partitions.h"
-#include "esp_partition.h"
-#include "esp_ota_ops.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "input_key_service.h"
-#include "sdcard_list.h"
-#include "sdcard_scan.h"
+#include <esp_wifi.h>
+#include <esp_event_loop.h>
+#include <nvs_flash.h>
+#include <esp_log.h>
+#include <audio_pipeline.h>
+#include <fatfs_stream.h>
+#include <i2s_stream.h>
+
+// only the working decoders
+#include <aac_decoder.h>
+#include <mp3_decoder.h>
+#include <ogg_decoder.h>
+#include <wav_decoder.h>
+
+#include <filter_resample.h>
+#include <esp_flash_partitions.h>
+#include <esp_partition.h>
+#include <esp_ota_ops.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/event_groups.h>
+#include <input_key_service.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
 #include <sys/unistd.h>
 #include <sys/stat.h>
-#include <dirent.h>
-#include "esp_vfs.h"
-#include "esp_http_server.h"
-#include "cJSON.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
+#include <esp_vfs.h>
+#include <esp_http_server.h>
+#include <cJSON.h>
 #include <stdbool.h>
-#include "mdns.h"
+#include <mdns.h>
+#include "adfcorrections.h"
+#include "playlist.h"
 
-#define FIRMWARE_VERSION "v1.0"
+extern "C" {
+    void app_main(void);
+}
+
+
+#define FIRMWARE_VERSION "v1.0b"
 
 #define CONFIG_FILE "/sdcard/ftcSoundBar.conf"
 static const char *TAG = "ftcSoundBar";
 #define FIRMWAREUPDATE "/sdcard/ftcSoundBar.bin"
 
 // some ftcSoundBar definitions
-#define DEC_VOLUME -2
-#define INC_VOLUME -1
-#define MODE_SINGLE_TRACK 0
-#define MODE_SHUFFLE 1
-#define MODE_REPEAT 2
+typedef enum {
+	DEC_VOLUME = -2,
+	INC_VOLUME = -1
+} volume_t;
+
+typedef enum {
+	MODE_SINGLE_TRACK = 0,
+	MODE_SHUFFLE = 1,
+	MODE_REPEAT = 2
+} play_mode_t;
 
 static EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
@@ -76,41 +88,266 @@ typedef struct http_server_context {
     char scratch[SCRATCH_BUFSIZE];
 } http_server_context_t;
 
-struct MusicBox {
 
+esp_err_t audio_element_event_handler(audio_element_handle_t self, audio_event_iface_msg_t *event, void *ctx);
+
+#define TAGPIPELINE "::PIPELINE"
+
+class Pipeline {
+public:
 	audio_board_handle_t board_handle;
 	audio_pipeline_handle_t pipeline;
-	audio_element_handle_t i2s_stream_writer, mp3_decoder, fatfs_stream_reader, rsp_handle;
-	playlist_operator_handle_t sdcard_list_handle;
-	uint8_t WIFI_SSID[32];
-	uint8_t WIFI_PASSWORD[64];
+	audio_element_handle_t i2s_stream_writer, decoder, fatfs_stream_reader;
+	audio_filetype_t decoder_filetype;
+	Pipeline();
+	void StartCodec(void);
+	void stop( void );
+	void play( char *url, audio_filetype_t filetype);
+	void build( audio_filetype_t filetype );
+	esp_err_t event_handler(audio_element_handle_t self, audio_event_iface_msg_t *event, void *ctx);
+};
+
+Pipeline::Pipeline() {
+	board_handle = NULL;
+	pipeline = NULL;
+	i2s_stream_writer = NULL;
+	decoder = NULL;
+	fatfs_stream_reader = NULL;
+	decoder_filetype = FILETYPE_UNKOWN;
+}
+
+void Pipeline::StartCodec(void) {
+
+	board_handle = audio_board_init();
+	audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+
+	ESP_LOGI(TAGPIPELINE, "Create audio pipeline for playback");
+	audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
+	pipeline = audio_pipeline_init(&pipeline_cfg);
+	mem_assert(pipeline);
+
+	ESP_LOGI(TAGPIPELINE, "Create i2s stream to write data to codec chip");
+	i2s_stream_cfg_t i2s_cfg = _I2S_STREAM_CFG_DEFAULT();
+	i2s_cfg.type = AUDIO_STREAM_WRITER;
+	i2s_stream_writer = i2s_stream_init(&i2s_cfg);
+	audio_pipeline_register(pipeline, i2s_stream_writer, "i2s");
+
+	ESP_LOGI(TAGPIPELINE, "Create fatfs stream to read data from sdcard");
+	fatfs_stream_cfg_t fatfs_cfg = FATFS_STREAM_CFG_DEFAULT();
+	fatfs_cfg.type = AUDIO_STREAM_READER;
+	fatfs_stream_reader = fatfs_stream_init(&fatfs_cfg);
+	audio_pipeline_register(pipeline, fatfs_stream_reader, "file");
+
+}
+
+void Pipeline::build( audio_filetype_t filetype ) {
+
+	// drop old decoder
+	if ( (decoder != NULL) && (decoder_filetype != filetype) ) {
+		ESP_LOGI(TAGPIPELINE, "unregister decoder");
+		audio_pipeline_unregister(pipeline, decoder);
+		audio_element_deinit(decoder);
+	}
+
+	switch (filetype) {
+	case FILETYPE_AAC: {
+			ESP_LOGI(TAGPIPELINE, "Create aac decoder to decode aac file");
+			aac_decoder_cfg_t aac_cfg = DEFAULT_AAC_DECODER_CONFIG();
+			decoder = aac_decoder_init(&aac_cfg);
+			decoder_filetype = FILETYPE_AAC;
+			break; }
+	case FILETYPE_MP3: {
+		ESP_LOGI(TAGPIPELINE, "Create mp3 decoder to decode mp3 file");
+		mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
+		decoder = mp3_decoder_init(&mp3_cfg);
+		decoder_filetype = FILETYPE_MP3;
+		break; }
+	case FILETYPE_OGG: {
+		ESP_LOGI(TAGPIPELINE, "Create ogg decoder to decode ogg file");
+		ogg_decoder_cfg_t ogg_cfg = DEFAULT_OGG_DECODER_CONFIG();
+		decoder = ogg_decoder_init(&ogg_cfg);
+		decoder_filetype = FILETYPE_OGG;
+		break; }
+	case FILETYPE_WAV: {
+		ESP_LOGI(TAGPIPELINE, "Create wav decoder to decode wav file");
+		wav_decoder_cfg_t wav_cfg = DEFAULT_WAV_DECODER_CONFIG();
+		decoder = wav_decoder_init(&wav_cfg);
+		decoder_filetype = FILETYPE_WAV;
+		break; }
+    default:
+    	filetype = FILETYPE_UNKOWN;
+		break;
+	}
+
+	audio_element_set_event_callback(decoder, audio_element_event_handler, NULL);
+	audio_element_set_event_callback(fatfs_stream_reader, audio_element_event_handler, NULL);
+
+	ESP_LOGI(TAGPIPELINE, "Register all elements to audio pipeline");
+
+	// register new decoder
+	audio_pipeline_register(pipeline, decoder, "decoder");
+
+	ESP_LOGI(TAGPIPELINE, "Link it together [sdcard]-->fatfs_stream-->decoder-->i2s_stream-->[codec_chip]");
+	const char *link_tag[3] = {"file", "decoder", "i2s"};
+	audio_pipeline_link(pipeline, &link_tag[0], 3);
+}
+
+void Pipeline::stop( void ) {
+
+	ESP_LOGI( TAGPIPELINE, "stop_track");
+
+	ESP_LOGI( TAGPIPELINE, "stop %d", audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING );
+	audio_pipeline_stop(pipeline);
+	ESP_LOGI( TAGPIPELINE, "wait %d", audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING );
+	audio_pipeline_wait_for_stop(pipeline);
+	ESP_LOGI( TAGPIPELINE, "terminate %d", audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING );
+	audio_pipeline_terminate(pipeline);
+	ESP_LOGI( TAGPIPELINE, "done %d", audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING );
+}
+
+void Pipeline::play( char *url, audio_filetype_t filetype) {
+
+	if ( filetype == FILETYPE_UNKOWN ) {
+		return;
+	}
+
+	ESP_LOGI( TAGPIPELINE, "play");
+
+    // stop running track
+    if ( audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING) {
+    	stop( );
+    }
+
+	if ( decoder_filetype != filetype ) {
+		ESP_LOGI( TAGPIPELINE, "relink ");
+
+		//audio_pipeline_deinit( pipeline);
+		build( filetype );
+
+	}
+
+    char *url2 = (char *)malloc( strlen( url ) + 10);
+    sprintf( url2, "/sdcard/%s", url );
+
+    esp_err_t err;
+
+    // start track
+    err = audio_element_set_uri( fatfs_stream_reader, url2 );
+    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "audio_element_set_uri: %d", err ); }
+
+    err = audio_pipeline_reset_ringbuffer( pipeline );
+    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "audio_pipeline_reset_ringbuffer: %d", err ); }
+
+    err = audio_pipeline_reset_elements( pipeline );
+    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "audio_pipeline_reset_elements: %d", err ); }
+
+    err = audio_pipeline_run( pipeline );
+    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "audio_pipeline_run: %d", err ); }
+
+    free(url2);
+
+}
+
+esp_err_t Pipeline::event_handler(audio_element_handle_t self, audio_event_iface_msg_t *event, void *ctx)
+{
+    ESP_LOGI(TAGPIPELINE, "Audio event %d from %s element", event->cmd, audio_element_get_tag(self));
+
+    if (event->cmd == AEL_MSG_CMD_REPORT_STATUS) {
+        switch ((int) event->data) {
+            case AEL_STATUS_STATE_RUNNING:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_STATE_RUNNING");
+                break;
+            case AEL_STATUS_STATE_STOPPED:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_STATE_STOPPED");
+                break;
+            case AEL_STATUS_STATE_PAUSED:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_STATE_PAUSED");
+                break;
+            case AEL_STATUS_STATE_FINISHED:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_STATE_FINISHED");
+                break;
+            case AEL_STATUS_INPUT_DONE:
+            	ESP_LOGI(TAGPIPELINE, "AEL_STATUS_INPUT_DONE");
+            	break;
+            case AEL_STATUS_INPUT_BUFFERING:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_INPUT_BUFFERING");
+                break;
+            case AEL_STATUS_OUTPUT_DONE:
+            	ESP_LOGI(TAGPIPELINE, "AEL_STATUS_OUTPUT_DONE");
+            	break;
+            case AEL_STATUS_OUTPUT_BUFFERING:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_OUTPUT_BUFFERING");
+                break;
+            case AEL_STATUS_ERROR_OPEN:
+            	ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_OPEN");
+            	break;
+            case AEL_STATUS_ERROR_INPUT:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_INPUT");
+                break;
+            case AEL_STATUS_ERROR_PROCESS:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_PROCESS");
+                break;
+            case AEL_STATUS_ERROR_OUTPUT:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_OUTPUT");
+                break;
+            case AEL_STATUS_ERROR_CLOSE:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_CLOSE");
+                break;
+            case AEL_STATUS_ERROR_TIMEOUT:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_TIMEOUT");
+                break;
+            case AEL_STATUS_MOUNTED:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_MOUNTED");
+                break;
+            case AEL_STATUS_UNMOUNTED:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_UNMOUNTED");
+                break;
+            case AEL_STATUS_ERROR_UNKNOWN:
+                ESP_LOGI(TAGPIPELINE, "AEL_STATUS_ERROR_UNKNOWN");
+                break;
+            default:
+                ESP_LOGI(TAGPIPELINE, "Some other event = %d", (int) event->data);
+        }
+    }
+    return ESP_OK;
+}
+
+typedef struct {
+
+	Pipeline pipeline;
+	PlayList playList;
+	char WIFI_SSID[32];
+	char WIFI_PASSWORD[64];
 	uint8_t TXT_AP_MODE;
 	char HOSTNAME[64];
 
 	uint16_t I2C_ADDRESS;
-	int active_track, mode;
+	int mode;
 	TaskHandle_t xBlinky;
 
-} ftcSoundBar;
+} ftcSoundBar_t;
 
-void init_ftcSoundBar( void ) {
-	ftcSoundBar.board_handle = NULL;
-	ftcSoundBar.pipeline = NULL;
-	ftcSoundBar.i2s_stream_writer = NULL;
-	ftcSoundBar.mp3_decoder = NULL;
-	ftcSoundBar.fatfs_stream_reader = NULL;
-	ftcSoundBar.rsp_handle = NULL;
-	ftcSoundBar.active_track = 0;
-	ftcSoundBar.mode = MODE_SINGLE_TRACK;
-	ftcSoundBar.xBlinky = NULL;
+ftcSoundBar_t ftcSoundBar;
 
-	memcpy( ftcSoundBar.WIFI_SSID, CONFIG_ESP_WIFI_SSID, 32 );
-	memcpy( ftcSoundBar.WIFI_PASSWORD, CONFIG_ESP_WIFI_PASSWORD, 64 );
-	ftcSoundBar.TXT_AP_MODE = 0;
-	strcpy( ftcSoundBar.HOSTNAME, "ftcSoundBar" );
-	ftcSoundBar.I2C_ADDRESS = 64;
+void ftcSoundBar_init( ftcSoundBar_t *ftcSoundBar ) {
+
+	ftcSoundBar->mode = MODE_SINGLE_TRACK;
+	ftcSoundBar->xBlinky = NULL;
+
+	strcpy( ftcSoundBar->WIFI_SSID, "YOUR_SSID");
+	strcpy( ftcSoundBar->WIFI_PASSWORD, "YOUR_PASSWORD");
+
+	ftcSoundBar->TXT_AP_MODE = 0;
+	strcpy( ftcSoundBar->HOSTNAME, "ftcSoundBar" );
+	ftcSoundBar->I2C_ADDRESS = 64;
 
 }
+
+esp_err_t audio_element_event_handler(audio_element_handle_t self, audio_event_iface_msg_t *event, void *ctx)
+{
+	return ftcSoundBar.pipeline.event_handler(self, event, ctx);
+}
+
 
 /**************************************************************************************
  *
@@ -120,7 +357,7 @@ void init_ftcSoundBar( void ) {
 
 #define CONFTAG "CONFIG"
 
-void write_config_file( void)
+void write_config_file( void )
 {
 	FILE* f;
 
@@ -222,13 +459,13 @@ void task_blinky(void *pvParameter)
 
     gpio_pad_select_gpio(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_direction((gpio_num_t)BLINK_GPIO, GPIO_MODE_OUTPUT);
     while( 1 ) {
         /* Blink off (output low) */
-        gpio_set_level(BLINK_GPIO, 0);
+        gpio_set_level((gpio_num_t)BLINK_GPIO, 0);
         vTaskDelay(250 / portTICK_RATE_MS);
         /* Blink on (output high) */
-        gpio_set_level(BLINK_GPIO, 1);
+        gpio_set_level((gpio_num_t)BLINK_GPIO, 1);
         vTaskDelay(250 / portTICK_RATE_MS);
     }
 
@@ -376,81 +613,6 @@ void task_ota(void *pvParameter)
  **************************************************************************************/
 
 /**
- * @brief change to next track in the playlist
- *
- * @param
- *
- * @return track's index number
- */
-int next_track( ) {
-
-	ftcSoundBar.active_track++;
-
-	if ( ftcSoundBar.active_track >= sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle) ) {
-		ftcSoundBar.active_track = 0;
-	}
-
-	return ftcSoundBar.active_track;
-}
-
-/**
- * @brief change to previous track in the playlist
- *
- * @param
- *
- * @return track's index number
- */
-int prev_track( ) {
-
-	ftcSoundBar.active_track--;
-
-	if ( ftcSoundBar.active_track < 0 ) {
-		ftcSoundBar.active_track = sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle) -1 ;
-	}
-
-	return ftcSoundBar.active_track;
-}
-
-/**
- * @brief stop running track
- *
- * @param
- *
- * @return
- */
-void stop_track( void ) {
-    audio_pipeline_stop(ftcSoundBar.pipeline);
-    audio_pipeline_wait_for_stop(ftcSoundBar.pipeline);
-    audio_pipeline_terminate(ftcSoundBar.pipeline);
-}
-
-/**
- * @brief play actual track in the playlist. Stop - if needed - the last track before.
- *
- * @param
- *
- * @return
- */
-void play_track( void ) {
-    char *url = NULL;
-
-    // stop running track
-    if ( audio_element_get_state(ftcSoundBar.i2s_stream_writer) == AEL_STATE_RUNNING) {
-    	stop_track();
-    }
-
-    // set next url
-    sdcard_list_choose( ftcSoundBar.sdcard_list_handle, ftcSoundBar.active_track, &url);
-    ESP_LOGI("PLAYTRACK", "URL: %s", url);
-
-    // start track
-    audio_element_set_uri(ftcSoundBar.fatfs_stream_reader, url);
-    audio_pipeline_reset_ringbuffer(ftcSoundBar.pipeline);
-    audio_pipeline_reset_elements(ftcSoundBar.pipeline);
-    audio_pipeline_run(ftcSoundBar.pipeline);
-}
-
-/**
  * @brief change volumne
  *
  * @param vol DEC_VOLUME, INC_VOLUME or an absolute value between 0 and 100
@@ -462,7 +624,7 @@ void volume( int vol) {
 	int player_volume ;
 
 	// get actual volume
-	audio_hal_get_volume(ftcSoundBar.board_handle->audio_hal, &player_volume);
+	audio_hal_get_volume(ftcSoundBar.pipeline.board_handle->audio_hal, &player_volume);
 
 	// change the value
 	switch (vol) {
@@ -479,7 +641,7 @@ void volume( int vol) {
     }
 
 	// set new value
-	audio_hal_set_volume(ftcSoundBar.board_handle->audio_hal, player_volume);
+	audio_hal_set_volume(ftcSoundBar.pipeline.board_handle->audio_hal, player_volume);
 
 }
 
@@ -559,12 +721,12 @@ static esp_err_t favico_get_handler(httpd_req_t *req )
 static esp_err_t img_get_handler(httpd_req_t *req )
 {
 
-	if ( strcmp( req->uri, "/img/ftcsoundbarlogo.svg") == 0 ) {
+	if ( strcmp( req->uri, "/img/ftcsoundbarlogo.png") == 0 ) {
 
-    	extern const unsigned char ftcSoundbar_start[] asm("_binary_ftcsoundbarlogo_svg_start");
-		extern const unsigned char ftcSoundbar_end[]   asm("_binary_ftcsoundbarlogo_svg_end");
+    	extern const unsigned char ftcSoundbar_start[] asm("_binary_ftcsoundbarlogo_png_start");
+		extern const unsigned char ftcSoundbar_end[]   asm("_binary_ftcsoundbarlogo_png_end");
 		const size_t ftcSoundbar_size = (ftcSoundbar_end - ftcSoundbar_start);
-		httpd_resp_set_type(req, "image/svg+xml");
+		httpd_resp_set_type(req, "image/png");
 		httpd_resp_send_chunk(req, (const char *)ftcSoundbar_start, ftcSoundbar_size);
 
 	} else if ( strcmp( req->uri, "/img/cocktail.svg") == 0 ) {
@@ -686,8 +848,7 @@ static esp_err_t styles_css_get_handler(httpd_req_t *req )
 
 static esp_err_t active_track_html_get_handler(httpd_req_t *req ) {
 
-	char line[128];
-	char *myurl;
+	char line[256];
 
 	httpd_resp_sendstr_chunk(req, "<!DOCTYPE html>" );
 	httpd_resp_sendstr_chunk(req, "<html lang=\"de\" xml:lang=\"de\" xmlns=\"http://www.w3.org/1999/xhtml\">" );
@@ -699,8 +860,8 @@ static esp_err_t active_track_html_get_handler(httpd_req_t *req ) {
 	httpd_resp_sendstr_chunk(req, "<body>" );
 
 	// ACTIVE TRACK
-	if ( ESP_OK == sdcard_list_choose(ftcSoundBar.sdcard_list_handle, ftcSoundBar.active_track, &myurl) ) {
-       sprintf( line, "<p align=\"center\">%03d %s</p>", ftcSoundBar.active_track+1, &(myurl[14]) );
+	if ( ftcSoundBar.playList.getActiveTrackNr() >= 0 ) {
+       sprintf( line, "<p align=\"center\">%03d %s</p>", ftcSoundBar.playList.getActiveTrackNr()+1, ftcSoundBar.playList.getActiveTrack() );
        httpd_resp_sendstr_chunk(req, line);
     } else {
        httpd_resp_sendstr_chunk(req, "<p align=\"center\">none</p>");
@@ -759,7 +920,7 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 		sprintf( line, "<tr><td><button type=\"button\" onclick=\"ota()\">update firmware</button></td><td><button type=\"button\" onclick=\"save_config('%s')\">save configuration</button></td></tr>", ftcSoundBar.HOSTNAME);
 		httpd_resp_sendstr_chunk(req, line );
 	} else {
-		sprintf( "<tr><td colspan=\"2\"><button type=\"button\" onclick=\"save_config('%s')\">save configuration</button></td></tr>", ftcSoundBar.HOSTNAME);
+		sprintf( line, "<tr><td colspan=\"2\"><button type=\"button\" onclick=\"save_config('%s')\">save configuration</button></td></tr>", ftcSoundBar.HOSTNAME);
 		httpd_resp_sendstr_chunk(req, line );
 	}
 
@@ -780,24 +941,22 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
  *
  * @return error-code
  */
-static esp_err_t root_html_get_handler(httpd_req_t *req )
+ esp_err_t root_html_get_handler(httpd_req_t *req )
 {
 	char line[128];
-	char *myurl;
 
 	send_header(req);
 
-	// send_active_track(req);
 	httpd_resp_sendstr_chunk(req, "<iframe src=\"active_track\" height=\"50px\"></iframe>" );
 
 	httpd_resp_sendstr_chunk(req, "<table align=\"center\"><tr>" );
 
 	/* BACKWARD */ httpd_resp_sendstr_chunk(req, "<td width=\"35\"><a onclick=\"previousTrack()\"><img src=\"/img/previous.svg\" height=\"20\"></a></td>");
 
-	char stylePlay[20] = "";
-	char styleStop[20] = "";
+	char stylePlay[30] = "";
+	char styleStop[30] = "";
 
-	if ( audio_element_get_state(ftcSoundBar.i2s_stream_writer) != AEL_STATE_RUNNING) {
+	if ( audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer) != AEL_STATE_RUNNING) {
 		strcpy( styleStop, "style=\"display:none\"" );
 	} else {
 		strcpy( stylePlay, "style=\"display:none\"" );
@@ -841,19 +1000,17 @@ static esp_err_t root_html_get_handler(httpd_req_t *req )
 
     httpd_resp_sendstr_chunk(req, "<table>" );
 
-    for (int i=0; i < sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle ); i++) {
-      sdcard_list_choose(ftcSoundBar.sdcard_list_handle, i, &myurl);
+    for (int i=0; i < ftcSoundBar.playList.getTracks(); i++) {
 
 	  httpd_resp_sendstr_chunk(req, "<tr>" );
 
-	  sprintf( line, "<td><a onclick=\"play(%d)\" class=\"select\">%03d %s</a></td></tr>", i+1, i+1, &(myurl[14]) );
+	  sprintf( line, "<td><a onclick=\"play(%d)\" class=\"select\">%03d %s</a></td></tr>", i+1, i+1, ftcSoundBar.playList.getTrack(i) );
 	  httpd_resp_sendstr_chunk(req, line);
 
 	  httpd_resp_sendstr_chunk(req, "</tr>" );
 	}
 
 	httpd_resp_sendstr_chunk(req, "</table>" );
-
 
 	send_footer(req);
 
@@ -863,26 +1020,31 @@ static esp_err_t root_html_get_handler(httpd_req_t *req )
 	return ESP_OK;
 }
 
+#define TAGAPI "::API"
+
 static esp_err_t track_get_handler(httpd_req_t *req)
-{	char *value;
-	char tag[20];
+{	char tag[20];
+
+    ESP_LOGI( TAGAPI, "GET track" );
 
     httpd_resp_set_type(req, "application/json");
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "tracks", sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle ) );
-    cJSON_AddNumberToObject(root, "active_track", ftcSoundBar.active_track );
+    cJSON_AddNumberToObject(root, "tracks", ftcSoundBar.playList.getTracks() );
+    cJSON_AddNumberToObject(root, "active_track", ftcSoundBar.playList.getActiveTrackNr() );
 
-    cJSON_AddNumberToObject(root, "state", audio_element_get_state(ftcSoundBar.i2s_stream_writer) );
+    cJSON_AddNumberToObject(root, "state", audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer) );
 
-    for (int i=0; i < sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle ); i++) {
-          sdcard_list_choose(ftcSoundBar.sdcard_list_handle, i, &value);
+    for (int i=0; i < ftcSoundBar.playList.getTracks(); i++) {
           sprintf( tag, "track#%d", i );
-          cJSON_AddStringToObject(root, tag, &(value[14]) );
+          cJSON_AddStringToObject(root, tag, ftcSoundBar.playList.getTrack(i) );
     }
 
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
+
+    ESP_LOGI( TAGAPI, "GET track: %s", sys_info);
+
     free((void *)sys_info);
     cJSON_Delete(root);
     return ESP_OK;
@@ -890,13 +1052,18 @@ static esp_err_t track_get_handler(httpd_req_t *req)
 
 static esp_err_t volume_get_handler(httpd_req_t *req)
 {
+	ESP_LOGI( TAGAPI, "GET volume" );
+
     httpd_resp_set_type(req, "application/json");
     cJSON *root = cJSON_CreateObject();
     int volume;
-    audio_hal_get_volume(ftcSoundBar.board_handle->audio_hal, &volume);
+    audio_hal_get_volume(ftcSoundBar.pipeline.board_handle->audio_hal, &volume);
     cJSON_AddNumberToObject(root, "volume", volume );
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
+
+    ESP_LOGI( TAGAPI, "GET volume: %s", sys_info);
+
     free((void *)sys_info);
     cJSON_Delete(root);
     return ESP_OK;
@@ -909,6 +1076,9 @@ static esp_err_t mode_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "mode", ftcSoundBar.mode );
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
+
+    ESP_LOGI( TAGAPI, "GET mode: %s", sys_info);
+
     free((void *)sys_info);
     cJSON_Delete(root);
     return ESP_OK;
@@ -943,8 +1113,11 @@ static esp_err_t play_post_handler(httpd_req_t *req) {
 
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST play: <null>");
 		return ESP_FAIL;
 	}
+
+	ESP_LOGI( TAGAPI, "POST play: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -952,10 +1125,10 @@ static esp_err_t play_post_handler(httpd_req_t *req) {
     cJSON *JSONtrack = cJSON_GetObjectItem(root, "track");
     if ( JSONtrack != NULL ) {
     	int track = JSONtrack->valueint;
-    	ftcSoundBar.active_track = track-1;
+    	ftcSoundBar.playList.setActiveTrackNr(track-1);
     }
 
-    play_track();
+    ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -963,12 +1136,13 @@ static esp_err_t play_post_handler(httpd_req_t *req) {
 
 static esp_err_t config_post_handler(httpd_req_t *req) {
 
-	ESP_LOGI( TAG, "config_post_handler");
-
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST config: <NULL>");
 		return ESP_FAIL;
 	}
+
+	ESP_LOGI( TAGAPI, "POST config: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -995,8 +1169,11 @@ static esp_err_t ota_post_handler(httpd_req_t *req) {
 
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST ota: <NULL>");
 		return ESP_FAIL;
 	}
+
+	ESP_LOGI( TAGAPI, "POST ota: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -1013,8 +1190,11 @@ static esp_err_t volume_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST volumne: <NULL>");
 		return ESP_FAIL;
 	}
+
+	ESP_LOGI( TAGAPI, "POST volume: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     cJSON *JSONvolume = cJSON_GetObjectItem(root, "volume");
@@ -1041,11 +1221,14 @@ static esp_err_t previous_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST previous: <NULL>");
 		return ESP_FAIL;
 	}
 
-    prev_track();
-	play_track();
+	ESP_LOGI( TAGAPI, "POST previous: %s", body);
+
+    ftcSoundBar.playList.prevTrack();
+    ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
 
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -1055,11 +1238,14 @@ static esp_err_t next_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST next: <NULL>");
 		return ESP_FAIL;
 	}
 
-    next_track();
-	play_track();
+	ESP_LOGI( TAGAPI, "POST next: %s", body);
+
+    ftcSoundBar.playList.nextTrack();
+    ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
 
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -1069,10 +1255,13 @@ static esp_err_t stop_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST stop: <NULL>");
 		return ESP_FAIL;
 	}
 
-    stop_track();
+	ESP_LOGI( TAGAPI, "POST stop: %s", body);
+
+	ftcSoundBar.pipeline.stop();
 
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -1082,14 +1271,17 @@ static esp_err_t mode_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST mode: <NULL>");
 		return ESP_FAIL;
 	}
+
+	ESP_LOGI( TAGAPI, "POST mode: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     int mode = cJSON_GetObjectItem(root, "mode")->valueint;
     ftcSoundBar.mode = mode;
-	if ( audio_element_get_state(ftcSoundBar.i2s_stream_writer) != AEL_STATE_RUNNING) {
-		play_track();
+	if ( audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer) != AEL_STATE_RUNNING) {
+		ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
 	}
 
     cJSON_Delete(root);
@@ -1101,10 +1293,13 @@ static esp_err_t pause_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST pause: <NULL>");
 		return ESP_FAIL;
 	}
 
-    audio_pipeline_pause(ftcSoundBar.pipeline);
+	ESP_LOGI( TAGAPI, "POST pause: %s", body);
+
+    audio_pipeline_pause(ftcSoundBar.pipeline.pipeline);
 
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -1114,10 +1309,13 @@ static esp_err_t resume_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
+		ESP_LOGI( TAGAPI, "POST resume: <NULL>");
 		return ESP_FAIL;
 	}
 
-    audio_pipeline_resume(ftcSoundBar.pipeline);
+	ESP_LOGI( TAGAPI, "POST resume: %s", body);
+
+    audio_pipeline_resume(ftcSoundBar.pipeline.pipeline);
 
     httpd_resp_sendstr(req, "Post control value successfully");
     return ESP_OK;
@@ -1129,10 +1327,11 @@ static esp_err_t resume_post_handler(httpd_req_t *req)
 esp_err_t start_web_server( const char *base_path )
 {
 
-    http_server_context_t *http_context = calloc(1, sizeof(http_server_context_t));
+    http_server_context_t *http_context = (http_server_context_t*)calloc(1, sizeof(http_server_context_t));
     strlcpy(http_context->base_path, base_path, sizeof(http_context->base_path));
 
     httpd_handle_t server = NULL;
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 20;
@@ -1145,31 +1344,31 @@ esp_err_t start_web_server( const char *base_path )
     }
 
     // /
-    httpd_uri_t root_html = { .uri = "/", .method = HTTP_GET, .handler   = root_html_get_handler };
+    httpd_uri_t root_html = { .uri = "/", .method = HTTP_GET, .handler   = root_html_get_handler , .user_ctx = NULL };
     httpd_register_uri_handler(server, &root_html);
 
     // setup
-    httpd_uri_t setup_html = { .uri = "/setup", .method = HTTP_GET, .handler = setup_html_get_handler };
+    httpd_uri_t setup_html = { .uri = "/setup", .method = HTTP_GET, .handler = setup_html_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &setup_html);
 
     // active_track
-    httpd_uri_t active_track_html = { .uri = "/active_track", .method = HTTP_GET, .handler = active_track_html_get_handler };
+    httpd_uri_t active_track_html = { .uri = "/active_track", .method = HTTP_GET, .handler = active_track_html_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &active_track_html);
 
     // styles.css
-    httpd_uri_t styles_css = { .uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_get_handler };
+    httpd_uri_t styles_css = { .uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &styles_css);
 
     // favicon
-    httpd_uri_t favico = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favico_get_handler };
+    httpd_uri_t favico = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favico_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &favico);
 
     // img/*
-    httpd_uri_t img = { .uri = "/img/*", .method = HTTP_GET, .handler = img_get_handler };
+    httpd_uri_t img = { .uri = "/img/*", .method = HTTP_GET, .handler = img_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &img);
 
     // API
-    httpd_uri_t track_get_uri = {.uri = "/api/v1/track", .method = HTTP_GET, .handler = track_get_handler };
+    httpd_uri_t track_get_uri = {.uri = "/api/v1/track", .method = HTTP_GET, .handler = track_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &track_get_uri);
 
     httpd_uri_t play_post_uri = { .uri = "/api/v1/track/play", .method = HTTP_POST, .handler = play_post_handler, .user_ctx = http_context };
@@ -1247,7 +1446,7 @@ esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
     case SYSTEM_EVENT_STA_GOT_IP:
     	ESP_LOGI(TAGWIFI, "SYSTEM_EVENT_STA_GOT_IP");
         ESP_LOGI(TAGWIFI, "Got IP: '%s'",
-                ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip));
+                ip4addr_ntoa((ip4_addr_t*) &event->event_info.got_ip.ip_info.ip));
         xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
@@ -1275,36 +1474,36 @@ static esp_err_t input_key_service_cb(periph_service_handle_t handle, periph_ser
            to start, pause, resume, finish current song and adjust volume
         */
     int player_volume;
-    audio_hal_get_volume(ftcSoundBar.board_handle->audio_hal, &player_volume);
+    audio_hal_get_volume(ftcSoundBar.pipeline.board_handle->audio_hal, &player_volume);
 
     if (evt->type == INPUT_KEY_SERVICE_ACTION_CLICK_RELEASE) {
         ESP_LOGI(TAGKEY, "[ * ] input key id is %d", (int)evt->data);
         switch ((int)evt->data) {
-            case INPUT_KEY_USER_ID_PLAY:
+            case INPUT_KEY_USER_ID_PLAY: {
                 ESP_LOGI(TAGKEY, "[ * ] [Play] input key event");
-                audio_element_state_t el_state = audio_element_get_state(ftcSoundBar.i2s_stream_writer);
+                audio_element_state_t el_state = audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer);
                 switch (el_state) {
                     case AEL_STATE_INIT :
                         ESP_LOGI(TAGKEY, "[ * ] Starting audio pipeline");
-                        audio_pipeline_run(ftcSoundBar.pipeline);
+                        audio_pipeline_run(ftcSoundBar.pipeline.pipeline);
                         break;
                     case AEL_STATE_RUNNING :
                         ESP_LOGI(TAGKEY, "[ * ] Pausing audio pipeline");
-                        audio_pipeline_pause(ftcSoundBar.pipeline);
+                        audio_pipeline_pause(ftcSoundBar.pipeline.pipeline);
                         break;
                     case AEL_STATE_PAUSED :
                         ESP_LOGI(TAGKEY, "[ * ] Resuming audio pipeline");
-                        audio_pipeline_resume(ftcSoundBar.pipeline);
+                        audio_pipeline_resume(ftcSoundBar.pipeline.pipeline);
                         break;
                     default :
                         ESP_LOGI(TAGKEY, "[ * ] Not supported state %d", el_state);
                 }
-                break;
+                break; }
             case INPUT_KEY_USER_ID_SET:
                 ESP_LOGI(TAGKEY, "[ * ] [Set] input key event");
                 ESP_LOGI(TAGKEY, "[ * ] Stopped, advancing to the next song");
-                next_track();
-                play_track();
+                ftcSoundBar.playList.nextTrack();
+                ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
                 break;
             case INPUT_KEY_USER_ID_VOLUP:
                 ESP_LOGI(TAGKEY, "[ * ] [Vol+] input key event");
@@ -1320,27 +1519,14 @@ static esp_err_t input_key_service_cb(periph_service_handle_t handle, periph_ser
     return ESP_OK;
 }
 
-void sdcard_url_save_cb(void *user_data, char *url)
-{
-    playlist_operator_handle_t sdcard_handle = (playlist_operator_handle_t)user_data;
-    esp_err_t ret = sdcard_list_save(sdcard_handle, url);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Fail to save sdcard url to sdcard playlist");
-    }
-}
-
-
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
-    ftcSoundBar.sdcard_list_handle = NULL;
-	ftcSoundBar.active_track = 0;
+    ftcSoundBar_init( &ftcSoundBar );
 
     ESP_LOGI(TAG, "ftMusicBox startup" );
-    ESP_LOGI(TAG, "(C) 2020 Oliver Schmiel, Christian Bergschneider, Stefan Fuss" );
-
-    init_ftcSoundBar();
+    ESP_LOGI(TAG, "(C) 2020 Idee: Oliver Schmiel, Programmierung: Christian Bergschneider, Stefan Fuss" );
 
     xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
 
@@ -1355,8 +1541,7 @@ void app_main(void)
     audio_board_sdcard_init(set);
 
     ESP_LOGI(TAG, "[1.2] Set up a sdcard playlist and scan sdcard music save to it");
-    sdcard_list_create(&ftcSoundBar.sdcard_list_handle);
-    sdcard_scan(sdcard_url_save_cb, "/sdcard", 0, (const char *[]) {"mp3"}, 1, ftcSoundBar.sdcard_list_handle);
+    ftcSoundBar.playList.readDir( "/sdcard" );
 
     ESP_LOGI(TAG, "[2.0] Initialize wifi" );
     read_config_file();
@@ -1367,11 +1552,7 @@ void app_main(void)
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
     ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
     ESP_ERROR_CHECK( esp_wifi_set_mode( WIFI_MODE_STA ) );
-    wifi_config_t sta_config = {
-        .sta = {
-            .bssid_set = false
-        }
-    };
+    wifi_config_t sta_config = {};
     memcpy( sta_config.sta.ssid, ftcSoundBar.WIFI_SSID, 32);
     memcpy( sta_config.sta.password, ftcSoundBar.WIFI_PASSWORD, 64);
     ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_STA, &sta_config) );
@@ -1382,66 +1563,29 @@ void app_main(void)
                         false, true, portMAX_DELAY);
     ESP_LOGI(TAG, "Connect to Wifi ! Start to Connect to Server....");
     if ( ftcSoundBar.xBlinky != NULL ) { vTaskDelete( ftcSoundBar.xBlinky ); }
-	gpio_set_level(BLINK_GPIO, 1);
+	gpio_set_level((gpio_num_t)BLINK_GPIO, 1);
 
 	mdns_init();
 	mdns_hostname_set( ftcSoundBar.HOSTNAME );
 
     ESP_LOGI(TAG, "[3.0] Start codec chip");
-    ftcSoundBar.board_handle = audio_board_init();
-    audio_hal_ctrl_codec(ftcSoundBar.board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+    ftcSoundBar.pipeline.StartCodec();
+    ftcSoundBar.pipeline.build( FILETYPE_MP3 );
 
     ESP_LOGI(TAG, "[4.0] Create and start input key service");
     input_key_service_info_t input_key_info[] = INPUT_KEY_DEFAULT_INFO();
-    input_key_service_cfg_t input_cfg = INPUT_KEY_SERVICE_DEFAULT_CONFIG();
+    input_key_service_cfg_t input_cfg = _INPUT_KEY_SERVICE_DEFAULT_CONFIG();
     input_cfg.handle = set;
     periph_service_handle_t input_ser = input_key_service_create(&input_cfg);
     input_key_service_add_key(input_ser, input_key_info, INPUT_KEY_NUM);
-    periph_service_set_callback(input_ser, input_key_service_cb, (void *)ftcSoundBar.board_handle);
-
-    ESP_LOGI(TAG, "[5.0] Create audio pipeline for playback");
-    audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-    ftcSoundBar.pipeline = audio_pipeline_init(&pipeline_cfg);
-    mem_assert(pipeline);
-
-    ESP_LOGI(TAG, "[5.1] Create i2s stream to write data to codec chip");
-    i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
-    i2s_cfg.i2s_config.sample_rate = 48000;
-    i2s_cfg.type = AUDIO_STREAM_WRITER;
-    ftcSoundBar.i2s_stream_writer = i2s_stream_init(&i2s_cfg);
-
-    ESP_LOGI(TAG, "[5.2] Create mp3 decoder to decode mp3 file");
-    mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
-    ftcSoundBar.mp3_decoder = mp3_decoder_init(&mp3_cfg);
-
-    ESP_LOGI(TAG, "[5.3] Create resample filter");
-    rsp_filter_cfg_t rsp_cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
-    ftcSoundBar.rsp_handle = rsp_filter_init(&rsp_cfg);
-
-    ESP_LOGI(TAG, "[5.4] Create fatfs stream to read data from sdcard");
-    char *url = NULL;
-    sdcard_list_choose(ftcSoundBar.sdcard_list_handle, ftcSoundBar.active_track, &url);
-    fatfs_stream_cfg_t fatfs_cfg = FATFS_STREAM_CFG_DEFAULT();
-    fatfs_cfg.type = AUDIO_STREAM_READER;
-    ftcSoundBar.fatfs_stream_reader = fatfs_stream_init(&fatfs_cfg);
-    audio_element_set_uri(ftcSoundBar.fatfs_stream_reader, url);
-
-    ESP_LOGI(TAG, "[5.5] Register all elements to audio pipeline");
-    audio_pipeline_register(ftcSoundBar.pipeline, ftcSoundBar.fatfs_stream_reader, "file");
-    audio_pipeline_register(ftcSoundBar.pipeline, ftcSoundBar.mp3_decoder, "mp3");
-    audio_pipeline_register(ftcSoundBar.pipeline, ftcSoundBar.rsp_handle, "filter");
-    audio_pipeline_register(ftcSoundBar.pipeline, ftcSoundBar.i2s_stream_writer, "i2s");
-
-    ESP_LOGI(TAG, "[5.6] Link it together [sdcard]-->fatfs_stream-->mp3_decoder-->resample-->i2s_stream-->[codec_chip]");
-    const char *link_tag[4] = {"file", "mp3", "filter", "i2s"};
-    audio_pipeline_link(ftcSoundBar.pipeline, &link_tag[0], 4);
+    periph_service_set_callback(input_ser, input_key_service_cb, (void *)ftcSoundBar.pipeline.board_handle);
 
     ESP_LOGI(TAG, "[6.0] Set up  event listener");
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
     audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
 
     ESP_LOGI(TAG, "[6.1] Listen for all pipeline events");
-    audio_pipeline_set_listener(ftcSoundBar.pipeline, evt);
+    audio_pipeline_set_listener(ftcSoundBar.pipeline.pipeline, evt);
 
     ESP_LOGI(TAG, "[7.0] Press the keys to control music player:");
     ESP_LOGI(TAG, "      [Play] to start, pause and resume, [Set] next song.");
@@ -1451,6 +1595,12 @@ void app_main(void)
     ESP_ERROR_CHECK( start_web_server( "localhost"  ) );
 
     ESP_LOGI(TAG, "[9.0] Everything started");
+
+    volume(25);
+
+    while (1) {
+    	vTaskDelay( 10000 );
+    }
 
     while (1) {
 
@@ -1464,24 +1614,24 @@ void app_main(void)
             continue;
         }
         if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT) {
+        	continue;
             // Set music info for a new song to be played
-            if (msg.source == (void *) ftcSoundBar.mp3_decoder
+            if (msg.source == (void *) ftcSoundBar.pipeline.decoder
                 && msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
-                audio_element_info_t music_info = {0};
-                audio_element_getinfo(ftcSoundBar.mp3_decoder, &music_info);
-                ESP_LOGI(TAG, "[ * ] Received music info from mp3 decoder, sample_rates=%d, bits=%d, ch=%d",
-                         music_info.sample_rates, music_info.bits, music_info.channels);
-                audio_element_setinfo(ftcSoundBar.i2s_stream_writer, &music_info);
-                rsp_filter_set_src_info(ftcSoundBar.rsp_handle, music_info.sample_rates, music_info.channels);
+                audio_element_info_t music_info = AUDIO_ELEMENT_INFO_DEFAULT();
+                audio_element_getinfo(ftcSoundBar.pipeline.decoder, &music_info);
+                ESP_LOGI(TAG, "[ * ] Received music info from decoder, sample_rates=%d, bits=%d, ch=%d duration=%d",
+                         music_info.sample_rates, music_info.bits, music_info.channels, music_info.duration);
+                audio_element_setinfo(ftcSoundBar.pipeline.i2s_stream_writer, &music_info);
+                i2s_stream_set_clk(ftcSoundBar.pipeline.i2s_stream_writer, music_info.sample_rates, music_info.bits, music_info.channels);
                 continue;
             }
             // Advance to the next song when previous finishes
-            if (msg.source == (void *) ftcSoundBar.i2s_stream_writer
+            if (msg.source == (void *) ftcSoundBar.pipeline.i2s_stream_writer
                 && msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
-                audio_element_state_t el_state = audio_element_get_state(ftcSoundBar.i2s_stream_writer);
+                audio_element_state_t el_state = audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer);
                 if (el_state == AEL_STATE_FINISHED) {
                     ESP_LOGI(TAG, "[ * ] Finished, advancing to the next song");
-                    int new_track;
 
          		    switch (ftcSoundBar.mode)
          			 {
@@ -1490,16 +1640,16 @@ void app_main(void)
          		   		   break;
          		   	   case MODE_SHUFFLE:
 
-         		   		   new_track = rand() % sdcard_list_get_url_num( ftcSoundBar.sdcard_list_handle);
-         		   		   ftcSoundBar.active_track = new_track;
-         		   		   ESP_LOGI(TAG, "SHUFFLE next track=%d", new_track+1);
-         		   		   stop_track();
-         		   		   play_track();
+         		   		   ftcSoundBar.playList.setRandomTrack();
+         		   		   ESP_LOGI(TAG, "SHUFFLE next track=%d", ftcSoundBar.playList.getActiveTrackNr() );
+         		   		   ftcSoundBar.pipeline.stop();
+         		   		   ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
          		   		   break;
          		   	   case MODE_REPEAT:
          		   		   ESP_LOGI(TAG, "REPEAT");
-         		   		   stop_track();
-         		   		   play_track();
+         		   		   ESP_LOGI(TAG, "%d", audio_element_get_state(ftcSoundBar.pipeline.i2s_stream_writer) );
+         		   		   //ftcSoundBar.pipeline.stop();
+         		   		   ftcSoundBar.pipeline.play( ftcSoundBar.playList.getActiveTrack(), ftcSoundBar.playList.getActiveFiletype() );
          		   		   break;
          		 	 }
                 }

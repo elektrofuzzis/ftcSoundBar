@@ -27,7 +27,7 @@ using namespace std;
 #include "jsmn/jsmn.h"
 
 // Library version
-#define VERSION 0.90
+const double MyVersion = 1.00;
 
 // Error codes
 #define COM_OK                      0
@@ -466,7 +466,7 @@ extern "C" {
   // gets the libs Version
   {
 	  
-	  *Version = VERSION;
+	  *Version = MyVersion;
 	  
 	  return FISH_OK;
   }
