@@ -47,17 +47,10 @@ void PlayList::readDir( const char *directory ) {
 
         	// check on valid extentions
 
-        	if      ( strcmp( ext, ".aac") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".3gp") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".mp4") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".m4a") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".m4b") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".mpg") == 0 )  { ft = FILETYPE_AAC; }
-        	else if ( strcmp( ext, ".mpeg") == 0 )  { ft = FILETYPE_AAC; }
+        	if ( strcmp( ext, ".mp3") == 0 )  { ft = FILETYPE_MP3; }
 
-        	else if ( strcmp( ext, ".mp3") == 0 )  { ft = FILETYPE_MP3; }
-
-        	else if ( strcmp( ext, ".ogg") == 0 )  { ft = FILETYPE_OGG; }
+        	// ogg has problems playing a song twice
+        	// else if ( strcmp( ext, ".ogg") == 0 )  { ft = FILETYPE_OGG; }
 
         	else if ( strcmp( ext, ".wav") == 0 )  { ft = FILETYPE_WAV; }
         }
@@ -93,6 +86,10 @@ void PlayList::readDir( const char *directory ) {
 
     closedir(d);
 
+    if (maxTrack >= 0) {
+    	activeTrack = 0;
+    }
+
     for (int i=0; i<=maxTrack; i++) {
     	ESP_LOGI(TAG, "track %d=%s", i, track[i]);
     }
@@ -102,7 +99,7 @@ void PlayList::readDir( const char *directory ) {
 char *PlayList::getTrack( int8_t trackNr ) {
 
 	if ( ( trackNr > maxTrack ) || ( trackNr < 0 ) ) {
-		return NULL;
+		return "none";
 	} else {
 		return track[trackNr];
 	}

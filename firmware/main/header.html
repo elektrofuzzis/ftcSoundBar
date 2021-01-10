@@ -2,7 +2,7 @@
 <html lang="de" xml:lang="de" xmlns="http://www.w3.org/1999/xhtml">
 <head>
 
-<meta name="encoding" content="utf-8">
+<meta charset="utf-8" />
 
 <link rel="stylesheet" href="styles.css">
 <link rel="icon" type="image/x-icon" href="favicon.ico" sizes="any">
@@ -28,7 +28,7 @@
 
 "use strict";
 
-function post( url, data ) {
+function post( url, data, async = true ) {
 
   const req = new XMLHttpRequest();
 
@@ -38,7 +38,7 @@ function post( url, data ) {
     }
   })
 
-  req.open('POST', url );
+  req.open('POST', url, async );
   req.setRequestHeader('Content-type','application/json; charset=utf-8');
 
   req.send(data);
@@ -57,7 +57,7 @@ function save_config(hostname) {
     txt_ap_mode: new String(txt_ap_mode)
   });
   
-  post( 'api/v1/config', data );
+  post( "/api/config", data );
 
   confirm("Configuration saved! Please wait for rebooting the  device..")
   
@@ -71,7 +71,7 @@ function ota() {
     ota: 1
   });
 
-  post( 'api/v1/ota', data );
+  post( "/api/ota", data );
   
   confirm("OTA in progress! Please wait for rebooting the device..")
   
@@ -79,18 +79,85 @@ function ota() {
 
 }
 
+function showState( state, mode ) {
+
+  	var play    = document.getElementById("play");
+  	var pause   = document.getElementById("pause");
+	var stop    = document.getElementById("stop");
+  	var error   = document.getElementById("error");
+	var shuffle = document.getElementById("shuffle");
+  	var repeat  = document.getElementById("repeat");
+	
+	switch( state ) {
+	case 2: // RUNNING
+		play.style.color  = "#383838";
+		pause.style.color = "#989898";
+  		stop.style.color  = "#383838";
+		error.style.color = "#383838";
+		break;
+	case 3: // PAUSED
+		play.style.color  = "#989898";
+		pause.style.color = "#383838";
+  		stop.style.color  = "#383838";
+		error.style.color = "#383838";
+		break;
+	case 6: // ERROR
+		play.style.color  = "#383838";
+  		pause.style.color = "#383838";
+  		stop.style.color  = "#383838";
+		error.style.color = "#989898";
+		break;
+	default: // STOPPED
+		play.style.color  = "#383838";
+  		pause.style.color = "#383838";
+  		stop.style.color  = "#989898";
+		error.style.color = "#383838";
+		break;
+	}
+		
+	switch (mode) {
+  	case 0: // single_track
+		shuffle.style.color = "#383838";
+		repeat.style.color  = "#383838";
+		break;
+  	case 1: // shuffle
+		shuffle.style.color = "#989898";
+		repeat.style.color  = "#383838";
+		break;
+  	case 2: // repeat
+		shuffle.style.color = "#383838";
+		repeat.style.color  = "#989898";
+		break;
+  	default: // Fehler
+		shuffle.style.color = "#383838";
+		repeat.style.color  = "#383838";
+		break;
+	}
+
+	
+}
+
+function refresh() {
+
+    var activeTrack = document.getElementById("activeTrack");
+
+	fetch("/api/activeTrack")
+      .then( response => {
+        return response.json();
+      })
+      .then(track => {
+		activeTrack.innerText=track['activeTrack'];
+		showState( track['state'], track['mode']);
+	  });
+}
+
 function play( t ) {
-  var play = document.getElementById("play");
-  var stop = document.getElementById("stop");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
   
   var data = JSON.stringify({
     track: t
   });
   
-  post( 'api/v1/track/play', data );
+  post( "/api/track/play", data );
   
 }
 
@@ -100,104 +167,52 @@ function volume( delta ) {
     relvolume: delta
   });
   
-  post( 'api/v1/volume', data );
+  post( "/api/volume", data );
   
 }
 
 function playTrack() {
-  var play = document.getElementById("play");
-  var stop = document.getElementById("stop");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
 
-  post( "api/v1/track/play", "{}");
+  post( "api/track/play", "{}");
 
 }
 
 function stopTrack() {
-  var play    = document.getElementById("play");
-  var stop    = document.getElementById("stop");
-  var shuffle = document.getElementById("shuffle");
-  var repeat  = document.getElementById("repeat");
-    
-  stop.style.display = "none";
-  play.style.display = "block";
-  
-  shuffle.style.fill = "#989898";
-  repeat.style.fill  = "#989898";
 
-  post( "api/v1/track/stop", "{}");
+  post( "api/track/stop", "{}");
 
 }
 
 function modeRepeat() {
-  var play    = document.getElementById("play");
-  var stop    = document.getElementById("stop");
-  var shuffle = document.getElementById("shuffle");
-  var repeat  = document.getElementById("repeat");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
-  
-  repeat.style.fill  = "white";
-  shuffle.style.fill = "#989898";
 
   var data = JSON.stringify({
     mode: 2
   });
 
-  post( "api/v1/mode", data );
+  post( "api/mode", data );
 
 }
 
 function modeShuffle() {
-  var play    = document.getElementById("play");
-  var stop    = document.getElementById("stop");
-  var shuffle = document.getElementById("shuffle");
-  var repeat  = document.getElementById("repeat");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
-
-  shuffle.style.fill = "white";
-  repeat.style.fill  = "#989898";
 
   var data = JSON.stringify({
     mode: 1
   });
 
-  post( "api/v1/mode", data );
+  post( "api/mode", data );
 
 }
 
 function nextTrack() {
-  var play    = document.getElementById("play");
-  var stop    = document.getElementById("stop");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
 
-  post("/api/v1/track/next","{}" );
+  post("/api/track/next","{}" );
 
 }
 
 function previousTrack() {
-  var play    = document.getElementById("play");
-  var stop    = document.getElementById("stop");
-  
-  play.style.display = "none";
-  stop.style.display = "block";
 
-  post("/api/v1/track/previous","{}" );
+  post("/api/track/previous","{}" );
 
 }
 
 </script>
-
-<table>
-  <tr height="20"><td></td></tr>
-  <tr><td><a href="/"><img src="img/ftcsoundbarlogo.png" height="250"></img></a></td></tr>
-</table>
-
-<hr>

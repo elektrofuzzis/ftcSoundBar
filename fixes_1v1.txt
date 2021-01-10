@@ -1,0 +1,27 @@
+[BAD WIFI]		Optimierung auf schlechte wifi-Umgebungen
+
+[BROWSER]		Warnings/Fehlermeldungen von FIREFOX und CHROME wurden analysiert und abgestellt.
+
+[IMAGES]		SVGs werden inline im html Quelltext gesendet, so dass diese im Firefox immer korrekt angezeigt werden
+			Das Logo wird als inline svg übertragen.
+			Auf dem Logo liegt bei der normalen Seite kein Link mehr auf sich selbst.
+				
+[FORMATE]		Angezeigte Dateiformate sind MP3 und WAV
+
+[HTML-AUSGABE]		Ausgabe von / wurde überarbeitet, so dass der HTML-Text lesbar ist
+
+[PIPELINE]		Die Audio-Pipeline wurde refactored, so dass hier keine Memory Leaks mehr enstehen
+
+[REPEAT-PAUSE]		Beim Repeat eines Tracks tritt keine Pause mehr auf.
+
+[REPEAT]		Der Button Repeat funktioniert wieder.
+
+[SHUFFLE]		Der Button Shuffle funktioniert wieder.
+
+[REFACTORING]		Initialisierung wifi ausgelagert, ftcSoundBar als Klasse
+
+[API]			Die REST-API-Aufrufe wurden von /api/v1/... auf /api/... umgestellt.
+
+[UI]			Die Visualisierung des Betriebsmodus wurde auf "Radio Style" umgestellt.
+			Damit entfallen Fehlermeldungen beim Firefox; bei Chrome wurde spradisch der aktive Track nicht dargestellt.
+			Die Tracks werden ab 0 gezählt, dann ist die Anzeige gleich dem Programmierinterface.

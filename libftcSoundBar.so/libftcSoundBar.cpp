@@ -27,7 +27,7 @@ using namespace std;
 #include "jsmn/jsmn.h"
 
 // Library version
-const double MyVersion = 1.00;
+const double MyVersion = 1.10;
 
 // Error codes
 #define COM_OK                      0
@@ -634,7 +634,7 @@ extern "C" {
 	  
 	  sprintf( jsonData, "{\"track\": %hi}", track );
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/play", jsonData );
+	  ftcSoundBar.http_post( (char *) "api/track/play", jsonData );
 	  
 	  return FISH_OK;
 	  
@@ -655,7 +655,7 @@ extern "C" {
 	  
 	  sprintf( jsonData, "{\"volume\": %hi}", volume );
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/volume", jsonData );
+	  ftcSoundBar.http_post( (char *) "api/volume", jsonData );
 	  
 	  return FISH_OK;
 	  
@@ -672,7 +672,7 @@ extern "C" {
   int stopTrack(short dummy) {
 	  // stops the actual track
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/stop", (char *)"" );
+	  ftcSoundBar.http_post( (char *) "api/track/stop", (char *)"" );
 	  
 	  return FISH_OK;
 	  
@@ -689,7 +689,7 @@ extern "C" {
   int pauseTrack(short dummy) {
 	  // pauses the actual track
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/pause", (char *)"" );
+	  ftcSoundBar.http_post( (char *) "api/track/pause", (char *)"" );
 	  
 	  return FISH_OK;
 	  
@@ -706,7 +706,7 @@ extern "C" {
   int resumeTrack(short dummy) {
 	  // continues the actual track
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/resume", (char *)"" );
+	  ftcSoundBar.http_post( (char *) "api/track/resume", (char *)"" );
 	  
 	  return FISH_OK;
 	  
@@ -723,7 +723,7 @@ extern "C" {
   int previous(short dummy) {
 	  // play previous track
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/previous", (char *)"" );
+	  ftcSoundBar.http_post( (char *) "api/track/previous", (char *)"" );
 	  
 	  return FISH_OK;
 	  
@@ -740,7 +740,7 @@ extern "C" {
   int next(short dummy) {
 	  // play next track
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/track/next", (char *)"" );
+	  ftcSoundBar.http_post( (char *) "api/track/next", (char *)"" );
 	  
 	  return FISH_OK;
 	  
@@ -761,7 +761,7 @@ extern "C" {
 	  
 	  sprintf( jsonData, "{\"mode\": %hi}", mode );
 	  
-	  ftcSoundBar.http_post( (char *) "api/v1/mode", jsonData );
+	  ftcSoundBar.http_post( (char *) "api/mode", jsonData );
 	  
 	  return FISH_OK;
 	  
@@ -780,7 +780,7 @@ extern "C" {
 	  int status;
 	  
 	  // http_get mode
-	  status = ftcSoundBar.http_get( (char *) "api/v1/mode" );
+	  status = ftcSoundBar.http_get( (char *) "api/mode" );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
@@ -808,7 +808,7 @@ extern "C" {
 	  int status;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/v1/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track" );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
@@ -836,7 +836,7 @@ extern "C" {
 	  int status;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/v1/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track" );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
@@ -864,7 +864,7 @@ extern "C" {
 	  int status;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/v1/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track" );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
@@ -892,7 +892,7 @@ extern "C" {
 	  int status;
 	  
 	  // http_get volume
-	  status = ftcSoundBar.http_get( (char *) "api/v1/volume" );
+	  status = ftcSoundBar.http_get( (char *) "api/volume" );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
