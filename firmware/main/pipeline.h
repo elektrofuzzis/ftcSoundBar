@@ -53,7 +53,7 @@ public:
 	audio_element_state_t getState( void );
 	void setListener( audio_event_iface_handle_t evt );
 	audio_board_handle_t getBoardHandle( void );
-	void eventLoop( void );
+	void audioMessageHandler( audio_event_iface_msg_t msg );
 };
 
 #endif /* MAIN_PIPELINE_H_ */

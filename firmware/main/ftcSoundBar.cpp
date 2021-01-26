@@ -26,9 +26,12 @@ FtcSoundBar::FtcSoundBar( ) {
 	strcpy( WIFI_SSID, "YOUR_SSID");
 	strcpy( WIFI_PASSWORD, "YOUR_PASSWORD");
 
-	TXT_AP_MODE = 0;
+	TXT_AP_MODE = false;
+	I2C_MODE = false;
+
 	strcpy( HOSTNAME, "ftcSoundBar" );
-	I2C_ADDRESS = 64;
+
+	STARTUP_VOLUME = 15;
 
 }
 
@@ -46,7 +49,8 @@ void FtcSoundBar::writeConfigFile( char *configFile )
     fprintf( f, "WIFI_SSID=%s\n", WIFI_SSID);
     fprintf( f, "WIFI_PASSWORD=%s\n", WIFI_PASSWORD);
     fprintf( f, "TXT_AP_MODE=%d\n", TXT_AP_MODE);
-    fprintf( f, "I2C_ADDRESS=%d\n", I2C_ADDRESS);
+    fprintf( f, "I2C_MODE=%d\n", I2C_MODE);
+    fprintf( f, "STARTUP_VOLUME=%d\n", STARTUP_VOLUME);
     fprintf( f, "HOSTNAME=%s\n", HOSTNAME);
 
     fclose(f);
@@ -87,9 +91,13 @@ void FtcSoundBar::readConfigFile( char *configFile )
 
     		    TXT_AP_MODE = ( atoi( value ) != 0 );
 
-    		} else if ( strcmp( key, "I2C_ADDRESS" ) == 0 ) {
+    		} else if ( strcmp( key, "STARTUP_VOLUME" ) == 0 ) {
 
-    			I2C_ADDRESS = atoi( value );
+    			STARTUP_VOLUME = atoi( value );
+
+    		} else if ( strcmp( key, "I2C_MODE" ) == 0 ) {
+
+    			I2C_MODE = atoi( value );
 
     		} else if ( strcmp( key, "HOSTNAME" ) == 0 ) {
 

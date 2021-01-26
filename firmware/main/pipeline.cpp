@@ -243,45 +243,30 @@ audio_board_handle_t Pipeline::getBoardHandle( void ) {
 
 }
 
-void Pipeline::eventLoop( void ) {
+void Pipeline::audioMessageHandler( audio_event_iface_msg_t msg ) {
 
-    audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
-    audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
-    setListener( evt );
+   	// check on next song
 
-    while(1) {
+   	if ( ( msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT) &&
+   	     ( msg.source == (void *)i2s_stream_writer ) ) {
 
-    	audio_event_iface_msg_t msg;
-    	esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
+   		if ( ( msg.cmd == AEL_MSG_CMD_REPORT_STATUS ) &&
+	         ( getState() == AEL_STATE_FINISHED ) ) {
 
-    	if (ret != ESP_OK) {
-    		// error reading event, ignore
-    		continue;
-    	}
-
-    	// check on next song
-
-    	if ( ( msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT) &&
-    	     ( msg.source == (void *)i2s_stream_writer ) ) {
-
-    		if ( ( msg.cmd == AEL_MSG_CMD_REPORT_STATUS ) &&
-		         ( getState() == AEL_STATE_FINISHED ) ) {
-
-    			switch ((int) mode ) {
-    			case MODE_SHUFFLE:
-    				playList.setRandomTrack();
-    				ESP_LOGI(TAGPIPELINE, "SHUFFLE next track=%d", playList.getActiveTrackNr() );
-    				play( playList.getActiveTrack(), playList.getActiveFiletype() );
-    				break;
-    			case MODE_REPEAT:
-    				ESP_LOGI(TAGPIPELINE, "REPEAT");
-    				play( playList.getActiveTrack(), playList.getActiveFiletype() );
-    				break;
-    			default:
-    				break;
-    			}
-    		}
-    	}
-	}
+   			switch ((int) mode ) {
+   			case MODE_SHUFFLE:
+   				playList.setRandomTrack();
+   				ESP_LOGI(TAGPIPELINE, "SHUFFLE next track=%d", playList.getActiveTrackNr() );
+   				play( playList.getActiveTrack(), playList.getActiveFiletype() );
+   				break;
+   			case MODE_REPEAT:
+   				ESP_LOGI(TAGPIPELINE, "REPEAT");
+   				play( playList.getActiveTrack(), playList.getActiveFiletype() );
+   				break;
+   			default:
+   				break;
+   			}
+   		}
+   	}
 
 }

@@ -17,10 +17,11 @@ public:
 	Pipeline pipeline;
 	char WIFI_SSID[32];
 	char WIFI_PASSWORD[64];
-	uint8_t TXT_AP_MODE;
+	bool TXT_AP_MODE;
+	bool I2C_MODE;
 	char HOSTNAME[64];
+	uint8_t STARTUP_VOLUME;
 
-	uint16_t I2C_ADDRESS;
 	TaskHandle_t xBlinky;
 
 	FtcSoundBar();

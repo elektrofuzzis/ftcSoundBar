@@ -45,40 +45,6 @@ function post( url, data, async = true ) {
 
 }
 
-function save_config(hostname) {
-
-  var wifi_ssid     = document.getElementById("wifi_ssid").value;
-  var wifi_password = document.getElementById("wifi_password").value; 
-  var txt_ap_mode   = document.getElementById("txt_ap_mode").checked;
- 
-  var data = JSON.stringify({
-    wifi_ssid: new String(wifi_ssid),
-    wifi_password: new String(wifi_password),
-    txt_ap_mode: new String(txt_ap_mode)
-  });
-  
-  post( "/api/config", data );
-
-  confirm("Configuration saved! Please wait for rebooting the  device..")
-  
-  location.reload(true);
-
-}
-
-function ota() {
-
-  var data = JSON.stringify({
-    ota: 1
-  });
-
-  post( "/api/ota", data );
-  
-  confirm("OTA in progress! Please wait for rebooting the device..")
-  
-  location.reload(true);
-
-}
-
 function showState( state, mode ) {
 
   	var play    = document.getElementById("play");
@@ -90,14 +56,14 @@ function showState( state, mode ) {
 	
 	switch( state ) {
 	case 2: // RUNNING
-		play.style.color  = "#383838";
-		pause.style.color = "#989898";
+		play.style.color  = "#989898";
+		pause.style.color = "#383838";
   		stop.style.color  = "#383838";
 		error.style.color = "#383838";
 		break;
 	case 3: // PAUSED
-		play.style.color  = "#989898";
-		pause.style.color = "#383838";
+		play.style.color  = "#383838";
+		pause.style.color = "#989898";
   		stop.style.color  = "#383838";
 		error.style.color = "#383838";
 		break;
@@ -214,5 +180,52 @@ function previousTrack() {
   post("/api/track/previous","{}" );
 
 }
+
+function vol_change() {
+	
+  var startup_volume = document.getElementById('startup_volume').value.toString();
+  document.getElementById('startup_volumeX').innerHTML =  startup_volume;
+
+}
+
+function save_config(hostname) {
+
+  var wifi_ssid      = document.getElementById("wifi_ssid").value;
+  var wifi_password  = document.getElementById("wifi_password").value; 
+  var txt_ap_mode    = document.getElementById("txt_ap_mode").checked;
+  var i2c_mode       = document.getElementById("i2c_mode").checked;
+  var startup_volume = document.getElementById("startup_volume").value;
+
+ 
+  var data = JSON.stringify({
+    wifi_ssid: new String(wifi_ssid),
+    wifi_password: new String(wifi_password),
+    txt_ap_mode: new String(txt_ap_mode),
+	i2c_mode: new String(i2c_mode),
+	startup_volume: new String(startup_volume)
+  });
+  
+  post( "/api/config", data );
+
+  confirm("Configuration saved! Please wait for rebooting the  device..")
+  
+  location.reload(true);
+
+}
+
+function ota() {
+
+  var data = JSON.stringify({
+    ota: 1
+  });
+
+  post( "/api/ota", data );
+  
+  confirm("OTA in progress! Please wait for rebooting the device..")
+  
+  location.reload(true);
+
+}
+
 
 </script>

@@ -4,13 +4,19 @@
 //
 // Communicate via ROBOPro from fischertechnik TXT Controller with ftcSoundBar
 //
-// Version 0,90
+// Version 1.29
 //
-// (C) 2020 Oliver Schmiel, Christian Bergschneider & Stefan Fuss
+// (C) 2020/21 Oliver Schmiel, Christian Bergschneider & Stefan Fuss
 //
 // compile to libftcSoundBar.so and copy it as User ROBOPRO to /opt/knobloch/libs
 //
 /////////////////////////////////////////////////////////////////////////////////////////
+
+// Version 1.20:
+//
+// get* functions are fully reentrant now
+// if DNS resulution of ftcSoundBar fails, use 192.168.8.100 instead
+// getLastError eleminated
 
 using namespace std;
 
@@ -27,7 +33,7 @@ using namespace std;
 #include "jsmn/jsmn.h"
 
 // Library version
-const double MyVersion = 1.10;
+const double MyVersion = 1.20;
 
 // Error codes
 #define COM_OK                      0
@@ -124,42 +130,21 @@ class RESTServer {
 	    in_addr2 ip;
 		char  hostname[20];
 		short port;
-		short lastError;
 		void  updateHostname();
 		int   tcp_send_receive( char *request, char *responseHeader, int s_responseHeader, char *responseData, int s_responseData );
 	public:
-	    JSON  jsonData;
-		RESTServer();
+	    RESTServer();
 		void  setIP( unsigned long newIP );
 		short getOcted( short octed);
 		void  setOcted( short octed, short value  );
 		void  setPort( short newPort );
 		short getPort( void );
 		char  *getHostname();
-		int   http_get( char serviceMethod[] );
+		int   http_get( char serviceMethod[], JSON *jsonData );
 		int   http_post( char serviceMethod[], char jsonData[] );
-		short getLastError( void );
 };
 
 RESTServer ftcSoundBar;
-
-/**
- * @brief      returns the last communication error
- *
- * @param      no parameters
- *
- * @return     
- *		- COM_OK
- *		- COM_ERR_OpenSocket
- *		- COM_ERR_ResolveHostname
- *		- COM_ERR_Connect
- *		- COM_ERR_Send
- *		- COM_ERR_ContentTypeMissing
- *		- COM_ERR_ContentUncomplete
- */
- short RESTServer::getLastError( void ) {
-	return lastError;
-}
 
 /**
  * @brief      constructor, tries to get a dns reolution for ftcSoundBar
@@ -185,7 +170,14 @@ RESTServer::RESTServer() {
 	if ( ( ftcSoundBar != NULL ) && ( ftcSoundBar->h_addrtype == AF_INET ) && ( ftcSoundBar->h_addr_list[0] != 0 ) ) { 
 		// DNS ok, IPv4
 		ip.s_addr = *((unsigned long*) ftcSoundBar->h_addr_list[0]);
-    }
+    } else {
+		// no DNS, assume TXT in AP Mode. ftcSoundBar has now 192.168.8.100
+		ip.octed[0] = 192;
+		ip.octed[1] = 168;
+		ip.octed[2] = 8;
+		ip.octed[3] = 100;
+		
+	}	
 	
 	// update hostname string
 	updateHostname();
@@ -319,14 +311,12 @@ int RESTServer::tcp_send_receive( char *request, char *responseHeader, int s_res
     
 	// connect
     if (connect(tcpSocket, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0) {
-		lastError = COM_ERR_Connect;
-        return lastError;
+		return COM_ERR_Connect;
 	}
 	
 	// send
     if (send(tcpSocket, request, strlen(request), 0) < 0) {
-		lastError = COM_ERR_Send;
-        return lastError;
+		return COM_ERR_Send;
 	}
 	
     // clear response
@@ -339,8 +329,7 @@ int RESTServer::tcp_send_receive( char *request, char *responseHeader, int s_res
 	
 	close(tcpSocket);
 	
-	lastError = COM_OK;
-	return lastError;
+	return COM_OK;
 
 }
 
@@ -356,7 +345,7 @@ int RESTServer::tcp_send_receive( char *request, char *responseHeader, int s_res
  *		- COM_ERR_ContentTypeMissing
  *      - COM_ERR_ContentUncomplete
  */
-int RESTServer::http_get( char serviceMethod[] )
+int RESTServer::http_get( char serviceMethod[], JSON *jsonData )
 {
 	// needed buffers
 	char request[1000];
@@ -367,10 +356,9 @@ int RESTServer::http_get( char serviceMethod[] )
     sprintf(request, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n", serviceMethod, hostname);
 	
 	// send command
-	com_status = tcp_send_receive( request, responseHeader, 1000, jsonData.jsonData, MAXJSON );
+	com_status = tcp_send_receive( request, responseHeader, 1000, jsonData->jsonData, MAXJSON );
 	if ( com_status != COM_OK ) {
-		lastError = com_status;
-		return lastError;
+		return com_status;
 	}
 	
 	// start checking response header
@@ -400,7 +388,7 @@ int RESTServer::http_get( char serviceMethod[] )
 
 		if ( strncmp( ptr, "Content-Length: ", 16 ) == 0) {
 			// check Content-Length. Attention: ContentLength starting with {
-			contentLength = ( (unsigned int)atoi( &(ptr[16]) ) == strlen( strstr( jsonData.jsonData, "{" ) ) );			
+			contentLength = ( (unsigned int)atoi( &(ptr[16]) ) == strlen( strstr( jsonData->jsonData, "{" ) ) );			
 		}
 
 		// get next line
@@ -408,16 +396,13 @@ int RESTServer::http_get( char serviceMethod[] )
 	}
 
 	if ( !contentType ) {
-		lastError = COM_ERR_ContentTypeMissing;
-		return lastError;
+		return COM_ERR_ContentTypeMissing;
 		
 	} else if ( !contentLength ) {
-		lastError = COM_ERR_ContentUncomplete;
-		return lastError;
+		return COM_ERR_ContentUncomplete;
 		
 	} 
 	
-	lastError = COM_OK;
 	return status;
 	
 }
@@ -446,9 +431,7 @@ int RESTServer::http_post( char serviceMethod[], char jsonData[] )
 						strlen(jsonData), 
 						jsonData);
 	
-	lastError = tcp_send_receive( request, responseHeader, 250, responseData, 250 );
-
-	return lastError;
+	return tcp_send_receive( request, responseHeader, 250, responseData, 250 );
 	
 }
 
@@ -471,19 +454,7 @@ extern "C" {
 	  return FISH_OK;
   }
 
-  /**
-   * @brief      get the last com-error
-   *
-   * @param[in]  lastError	error number
-   *
-   * @return
-   *		- FISH_OK
-   */	
-  int getLastError(short *lastError) {
-	  *lastError = ftcSoundBar.getLastError( );
-	  return FISH_OK;
-  }
- 
+  
    /**
    * @brief      set ftcSoundBar's port
    *
@@ -778,16 +749,17 @@ extern "C" {
   int getMode(short *mode)  {
 
 	  int status;
+	  JSON jsonData;
 	  
 	  // http_get mode
-	  status = ftcSoundBar.http_get( (char *) "api/mode" );
+	  status = ftcSoundBar.http_get( (char *) "api/mode", &jsonData );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != ftcSoundBar.jsonData.GetParam( (char *) "mode", mode ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "mode", mode ) ) {
 		  return FISH_ERR;
 	  }
 	  
@@ -806,16 +778,17 @@ extern "C" {
   int getTracks(short *tracks)  {
 
 	  int status;
+	  JSON jsonData;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != ftcSoundBar.jsonData.GetParam( (char *) "tracks", tracks ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "tracks", tracks ) ) {
 		  return FISH_ERR;
 	  }
 	  
@@ -834,16 +807,17 @@ extern "C" {
   int getActiveTrack(short *active_track)  {
 
 	  int status;
+	  JSON jsonData;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != ftcSoundBar.jsonData.GetParam( (char *) "active_track", active_track ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "active_track", active_track ) ) {
 		  return FISH_ERR;
 	  }
 	  
@@ -862,16 +836,17 @@ extern "C" {
   int getTrackState(short *state)  {
 
 	  int status;
+	  JSON jsonData;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track" );
+	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
 	  
 	  if ( status != 200 ) {
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != ftcSoundBar.jsonData.GetParam( (char *) "state", state ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "state", state ) ) {
 		  return FISH_ERR;
 	  }
 	  
@@ -890,16 +865,17 @@ extern "C" {
   int getVolume(short *volume)  {
 
 	  int status;
+	  JSON jsonData;
 	  
 	  // http_get volume
-	  status = ftcSoundBar.http_get( (char *) "api/volume" );
-	  
+	  status = ftcSoundBar.http_get( (char *) "api/volume", &jsonData );
+
 	  if ( status != 200 ) {
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != ftcSoundBar.jsonData.GetParam( (char *) "volume", volume ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "volume", volume ) ) {
 		  return FISH_ERR;
 	  }
 	  

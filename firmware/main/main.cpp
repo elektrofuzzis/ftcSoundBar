@@ -36,6 +36,9 @@
 #include <mdns.h>
 #include <esp_netif.h>
 #include <periph_wifi.h>
+#include <esp_task_wdt.h>
+
+//#include <driver/i2c.h>
 
 #include "adfcorrections.h"
 #include "playlist.h"
@@ -46,10 +49,10 @@ extern "C" {
     void app_main(void);
 }
 
-#define FIRMWARE_VERSION "v1.1"
+#define FIRMWARE_VERSION "v1.2"
 
 // DEBUGREST shows detailed informations during RESTAPI calls
-//#define DEBUGREST
+// #define DEBUGREST
 
 #define CONFIG_FILE "/sdcard/ftcSoundBar.conf"
 static const char *TAG = "ftcSoundBar";
@@ -66,6 +69,18 @@ static char ota_write_data[BUFFSIZE + 1] = { 0 };
 
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + 128)
 #define SCRATCH_BUFSIZE (10240)
+
+// I2C Slave Setup
+#define _I2C_NUMBER(num) I2C_NUM_##num
+#define I2C_NUMBER(num) _I2C_NUMBER(num)
+#define I2C_SLAVE_NUM I2C_NUMBER(1)			        // 0 durch peripherals belegt
+#define I2C_SLAVE_SCL_IO 32                         /*!< gpio number for i2c slave clock */
+#define I2C_SLAVE_SDA_IO 33                         /*!< gpio number for i2c slave data */
+#define I2C_DATA_LENGTH 512                         /*!< Data buffer length of test buffer */
+#define I2C_SLAVE_TX_BUF_LEN (2 * I2C_DATA_LENGTH)  /*!< I2C slave tx buffer size */
+#define I2C_SLAVE_RX_BUF_LEN (2 * I2C_DATA_LENGTH)  /*!< I2C slave rx buffer size */
+#define I2C_SLAVE_ADDR 0x33
+
 
 typedef struct http_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
@@ -87,7 +102,6 @@ esp_err_t audio_element_event_handler(audio_element_handle_t self, audio_event_i
  * simple tasks
  *
  **************************************************************************************/
-
 
 void task_reboot(void *pvParameter)
 {
@@ -476,42 +490,78 @@ static esp_err_t send_footer(httpd_req_t *req )
  */
 static esp_err_t setup_html_get_handler(httpd_req_t *req )
 {
-	char line[256];
+	char line[512];
+	char checked[20] = "";
+	char display[30] = "";
 
 	send_header(req);
 
 	httpd_resp_sendstr_chunk_cr(req, "<table>" );
 	httpd_resp_sendstr_chunk_cr(req, "	<tr height=\"20\"><td></td></tr>" );
 	httpd_resp_send_img( req, "		<tr><td><a href=\"/\">", IMAGE_LOGO, "</a></td></tr>" );
-	httpd_resp_sendstr_chunk_cr(req, "<table>" );
+	httpd_resp_sendstr_chunk_cr(req, "</table>" );
+
 	httpd_resp_sendstr_chunk_cr(req, "<hr>" );
 
-	httpd_resp_sendstr_chunk(req, "<table align=\"center\">" );
+	// table with ftcSoundBar's settings
+	httpd_resp_sendstr_chunk_cr(req, "<table align=\"center\">" );
 
-	sprintf(line, "<tr><td style=\"text-align:right\">firmware version:</td><td style=\"text-align:left\">%s</td></tr>", FIRMWARE_VERSION );
-	httpd_resp_sendstr_chunk(req, line );
+	// Firmware Version
+	sprintf(line, "	<tr><td style=\"text-align:right\" width=\"50%%\">firmware version:</td><td colspan=\"2\" style=\"text-align:left\">%s</td></tr>", FIRMWARE_VERSION );
+	httpd_resp_sendstr_chunk_cr(req, line );
 
-	sprintf(line, "<tr><td style=\"text-align:right\">wifi SSID:</td><td><input type=\"text\" value=\"%s\" id=\"wifi_ssid\"></td></tr>", ftcSoundBar.WIFI_SSID );
-	httpd_resp_sendstr_chunk(req, line );
+	// Hostname
+	sprintf(line, "	<tr><td style=\"text-align:right\">hostname:</td><td colspan=\"2\" style=\"text-align:left\">%s</td></tr>", ftcSoundBar.HOSTNAME );
+	httpd_resp_sendstr_chunk_cr(req, line );
 
-	sprintf(line, "<tr><td style=\"text-align:right\">pre-shared key:</td><td><input type=\"password\" value=\"%s\" id=\"wifi_password\"></td></tr>", ftcSoundBar.WIFI_PASSWORD );
-	httpd_resp_sendstr_chunk(req, line );
+	// IP Address
+	tcpip_adapter_ip_info_t myip;
+	tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &myip);
+	sprintf(line, "	<tr><td style=\"text-align:right\">ip-address:</td><td colspan=\"2\" style=\"text-align:left\">%s</td></tr>", ip4addr_ntoa(&(myip.ip)));
+	httpd_resp_sendstr_chunk_cr(req, line );
 
-	char checked[20] = "";
-	char display[30] = "";
+	// startup Volume
+	sprintf(line, "	<tr><td style=\"text-align:right\" >startup volume:</td><td id=\"startup_volumeX\" style=\"text-align:left\" width=\"5%%\">%d</td><td width=\"45%%\"><input align=\"left\" onchange=\"vol_change();\" type=\"range\" min=\"0\" max=\"100\" value=\"%d\" class=\"volslider\" id=\"startup_volume\"></td></tr>", ftcSoundBar.STARTUP_VOLUME, ftcSoundBar.STARTUP_VOLUME );
+	httpd_resp_sendstr_chunk_cr(req, line );
 
-	if ( ftcSoundBar.TXT_AP_MODE) {
+	// I2C
+	if ( ftcSoundBar.I2C_MODE) {
 		strcpy( checked, "checked");
+		strcpy( display, "");
 	} else {
+		strcpy( checked, "");
 		strcpy( display, "style=\"display:none\"");
 	}
+	sprintf( line, "	<tr><td style=\"text-align:right\">i2c-mode:</td><td colspan=\"2\" style=\"text-align:left\"><label class=\"switch\"><input type=\"checkbox\" id=\"i2c_mode\" %s><span class=\"slider round\"></span></label></td></tr>", checked);
+	httpd_resp_sendstr_chunk_cr(req, line );
+	httpd_resp_sendstr_chunk_cr(req, "	<tr><td style=\"text-align:right\">&nbsp;</td><td colspan=\"2\" style=\"font-size: 10px; text-align:left\">Enabling I2C-interface disables the on-board buttons \"Play\", \"Set\", \"Vol-\" and \"Vol+\"</td></tr>" );
 
-	sprintf( line, "<tr><td style=\"text-align:right\">txt client mode:</td><td style=\"text-align:left\"><label class=\"switch\"><input type=\"checkbox\" id=\"txt_ap_mode\" %s><span class=\"slider round\"></span></label></td></tr>", checked);
-	httpd_resp_sendstr_chunk(req, line );
+	// TXT AP Mode
+	if ( ftcSoundBar.TXT_AP_MODE) {
+		strcpy( checked, "checked");
+		strcpy( display, "");
+	} else {
+		strcpy( checked, "");
+		strcpy( display, "style=\"display:none\"");
+	}
+	sprintf( line, "	<tr><td style=\"text-align:right\">txt client mode:</td><td colspan=\"2\" style=\"text-align:left\"><label class=\"switch\"><input type=\"checkbox\" id=\"txt_ap_mode\" %s><span class=\"slider round\"></span></label></td></tr>", checked);
+	httpd_resp_sendstr_chunk_cr(req, line );
+	httpd_resp_sendstr_chunk_cr(req, "	<tr><td style=\"text-align:right\">&nbsp;</td><td colspan=\"2\" style=\"font-size: 10px; text-align:justify\">Enabling txt client mode sets ftcSoundBar's ip address to 192.168.8.100. You need to apply the TXT's wifi settings as well.</td></tr>" );
 
-	// sprintf( "<div id=\"ip\" %s><tr><td style=\"text-align:right\">ip address:</td><td style=\"text-align:left\">192.168.8.100</td></tr><div>", display);
-	// httpd_resp_sendstr_chunk(req, line );
+	// SSID
+	sprintf(line, "	<tr><td style=\"text-align:right\">wifi SSID:</td><td colspan=\"2\"><input type=\"text\" value=\"%s\" id=\"wifi_ssid\"></td></tr>", ftcSoundBar.WIFI_SSID );
+	httpd_resp_sendstr_chunk_cr(req, line );
 
+	// Password
+	sprintf(line, "	<tr><td style=\"text-align:right\">pre-shared key:</td><td colspan=\"2\"><input type=\"password\" value=\"%s\" id=\"wifi_password\"></td></tr>", ftcSoundBar.WIFI_PASSWORD );
+	httpd_resp_sendstr_chunk_cr(req, line );
+
+	// Next Block
+	httpd_resp_sendstr_chunk_cr(req, "</table>" );
+	httpd_resp_sendstr_chunk_cr(req, "<hr>" );
+	httpd_resp_sendstr_chunk_cr(req, "<table>" );
+
+	// Buttons
 	if ( access( FIRMWAREUPDATE, F_OK ) != -1 ) {
 		sprintf( line, "<tr><td><button type=\"button\" onclick=\"ota()\">update firmware</button></td><td><button type=\"button\" onclick=\"save_config('%s')\">save configuration</button></td></tr>", ftcSoundBar.HOSTNAME);
 		httpd_resp_sendstr_chunk(req, line );
@@ -547,7 +597,7 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 	httpd_resp_sendstr_chunk_cr(req, "<table>" );
 	httpd_resp_sendstr_chunk_cr(req, "	<tr height=\"20\"><td></td></tr>" );
 	httpd_resp_send_img( req, "		<tr><td>", IMAGE_LOGO, "</td></tr>" );
-	httpd_resp_sendstr_chunk_cr(req, "<table>" );
+	httpd_resp_sendstr_chunk_cr(req, "</table>" );
 	httpd_resp_sendstr_chunk_cr(req, "<hr>" );
 
 	const char   active[30] = "style=\"color: #989898;\"";
@@ -832,13 +882,18 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
 
-    char *wifi_ssid = cJSON_GetObjectItem(root, "wifi_ssid")->valuestring;
-    char *wifi_password = cJSON_GetObjectItem(root, "wifi_password")->valuestring;
-    char *txt_ap_mode = cJSON_GetObjectItem(root, "txt_ap_mode")->valuestring;
+    char *wifi_ssid      = cJSON_GetObjectItem(root, "wifi_ssid")->valuestring;
+    char *wifi_password  = cJSON_GetObjectItem(root, "wifi_password")->valuestring;
+    char *txt_ap_mode    = cJSON_GetObjectItem(root, "txt_ap_mode")->valuestring;
+    char *i2c_mode       = cJSON_GetObjectItem(root, "i2c_mode")->valuestring;
+    char *startup_volume = cJSON_GetObjectItem(root, "startup_volume")->valuestring;
+
+
+    ftcSoundBar.STARTUP_VOLUME = atoi(startup_volume);
+    ftcSoundBar.I2C_MODE       = ( strcmp( i2c_mode, "true" ) == 0 );
+    ftcSoundBar.TXT_AP_MODE    = ( strcmp( txt_ap_mode, "true" ) == 0 );
     strcpy( (char *)ftcSoundBar.WIFI_SSID, wifi_ssid );
     strcpy( (char *)ftcSoundBar.WIFI_PASSWORD, wifi_password);
-    ftcSoundBar.TXT_AP_MODE = ( strcmp( txt_ap_mode, "true" ) == 0 );
-    ESP_LOGI( TAG, "TXT_AP_MODE: %s",txt_ap_mode);
 
     ftcSoundBar.writeConfigFile( (char *) CONFIG_FILE );
 
@@ -990,9 +1045,6 @@ static esp_err_t mode_post_handler(httpd_req_t *req)
     cJSON *root = cJSON_Parse(body);
     int mode = cJSON_GetObjectItem(root, "mode")->valueint;
     ftcSoundBar.pipeline.setMode( (play_mode_t) mode );
-    if ( !ftcSoundBar.pipeline.isPlaying() ) {
-    	ftcSoundBar.pipeline.play( );
-    }
 
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "Post control value successfully");
@@ -1259,13 +1311,144 @@ static esp_err_t input_key_service_cb(periph_service_handle_t handle, periph_ser
     return ESP_OK;
 }
 
+/**************************************************************************************
+ *
+ * i2c Interface
+ *
+ **************************************************************************************/
+
+static esp_err_t i2c_slave_init(void)
+{
+    int i2c_slave_port = I2C_SLAVE_NUM;
+    i2c_config_t conf_slave;
+    conf_slave.sda_io_num = I2C_SLAVE_SDA_IO;
+    conf_slave.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf_slave.scl_io_num = I2C_SLAVE_SCL_IO;
+    conf_slave.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf_slave.mode = I2C_MODE_SLAVE;
+    conf_slave.slave.addr_10bit_en = 0;
+    conf_slave.slave.slave_addr = I2C_SLAVE_ADDR;
+    i2c_param_config(i2c_slave_port, &conf_slave);
+    return i2c_driver_install(i2c_slave_port, conf_slave.mode, I2C_SLAVE_RX_BUF_LEN, I2C_SLAVE_TX_BUF_LEN, 0);
+}
+
+static void disp_buf(uint8_t *buf, int len)
+{
+    int i;
+    for (i = 0; i < len; i++) {
+        printf("%02x ", buf[i]);
+        if ((i + 1) % 16 == 0) {
+            printf("\n");
+        }
+    }
+    printf("\n");
+}
+
+#define TAGI2C "::I2C"
+enum I2C_CMD {
+	I2C_CMD_PLAY=0,
+	I2C_CMD_SET_VOLUME=1,
+	I2C_CMD_GET_VOLUME=2,
+	I2C_CMD_STOP_TRACK=3,
+	I2C_CMD_PAUSE_TRACK=4,
+	I2C_CMD_RESUME_TRACK=5,
+	I2C_CMD_SET_MODE=6,
+	I2C_CMD_GET_MODE=7,
+	I2C_CMD_GET_TRACKS=8,
+	I2C_CMD_GET_ACTIVE_TRACK=9,
+	I2C_CMD_GET_TRACK_STATE=10,
+	I2C_CMD_NEXT=11,
+	I2C_CMD_PREVIOUS=12
+};
+
+
+static void i2c_task(void)
+{
+    int bytes_read = 0;
+
+    uint8_t data[10];    // receive buffer
+    uint8_t result[10];  // write buffer
+
+   	bytes_read = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, 5, 0);
+
+   	if (bytes_read > 0 ) {
+    	printf("%d bytes read.", bytes_read);
+    	switch (data[0]) {
+    	case I2C_CMD_PLAY:
+			ESP_LOGI(TAGI2C, "play %d", data[1]);
+			ftcSoundBar.pipeline.playList.setActiveTrackNr( data[1] );
+			ftcSoundBar.pipeline.play();
+			break;
+    	case I2C_CMD_SET_VOLUME:
+			ESP_LOGI(TAGI2C, "set volume %d", data[1]);
+			ftcSoundBar.pipeline.setVolume( data[1] );
+			break;
+    	case I2C_CMD_GET_VOLUME:
+			ESP_LOGI(TAGI2C, "get volume" );
+			result[0] = ftcSoundBar.pipeline.getVolume();
+			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			break;
+    	case I2C_CMD_STOP_TRACK:
+			ESP_LOGI(TAGI2C, "stop" );
+			ftcSoundBar.pipeline.stop();
+			break;
+    	case I2C_CMD_PAUSE_TRACK:
+			ESP_LOGI(TAGI2C, "pause" );
+			ftcSoundBar.pipeline.pause();
+			break;
+    	case I2C_CMD_RESUME_TRACK:
+			ESP_LOGI(TAGI2C, "resume");
+			ftcSoundBar.pipeline.resume();
+			break;
+    	case I2C_CMD_SET_MODE:
+			ESP_LOGI(TAGI2C, "set mode %d", data[1]);
+			ftcSoundBar.pipeline.setMode( (play_mode_t) data[1] );
+			break;
+    	case I2C_CMD_GET_MODE:
+			ESP_LOGI(TAGI2C, "get mode" );
+			result[0] = ftcSoundBar.pipeline.getMode();
+			i2c_reset_tx_fifo(I2C_SLAVE_NUM);
+			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			break;
+    	case I2C_CMD_GET_TRACKS:
+			ESP_LOGI(TAGI2C, "get tacks");
+			result[0] = ftcSoundBar.pipeline.playList.getTracks();
+			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			break;
+    	case I2C_CMD_GET_ACTIVE_TRACK:
+			ESP_LOGI(TAGI2C, "get active track");
+			result[0] = ftcSoundBar.pipeline.playList.getActiveTrackNr();
+			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			break;
+    	case I2C_CMD_GET_TRACK_STATE:
+			ESP_LOGI(TAGI2C, "get track state");
+			result[0] = ftcSoundBar.pipeline.getState();
+			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			break;
+    	case I2C_CMD_NEXT:
+			ESP_LOGI(TAGI2C, "next");
+			ftcSoundBar.pipeline.playList.nextTrack();
+			break;
+    	case I2C_CMD_PREVIOUS:
+			ESP_LOGI(TAGI2C, "previous");
+			ftcSoundBar.pipeline.playList.prevTrack();
+			break;
+    	default:
+    		ESP_LOGI(TAGI2C, "unkown cmd");
+    		disp_buf(data, bytes_read);
+			break;
+    	}
+
+   	}
+
+}
+
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
-
-    ESP_LOGI(TAG, "ftMusicBox startup" );
-    ESP_LOGI(TAG, "(C) 2020 Idee: Oliver Schmiel, Programmierung: Christian Bergschneider, Stefan Fuss" );
+    ESP_LOGI(TAG, "ftSoundBar startup" );
+    ESP_LOGI(TAG, "(C) 2020/21 Idee: Oliver Schmiel, Programmierung: Christian Bergschneider, Stefan Fuss" );
 
     xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
 
@@ -1276,7 +1459,6 @@ void app_main(void)
     esp_periph_set_handle_t set = esp_periph_set_init(&periph_cfg);
 
     ESP_LOGI(TAG, "[1.1] Initialize and start peripherals");
-    audio_board_key_init(set);
     audio_board_sdcard_init(set, SD_MODE_1_LINE);
 
     ESP_LOGI(TAG, "[1.2] Set up a sdcard playlist and scan sdcard music save to it");
@@ -1292,25 +1474,50 @@ void app_main(void)
     ftcSoundBar.pipeline.StartCodec();
     ftcSoundBar.pipeline.build( FILETYPE_MP3 );
 
-    ESP_LOGI(TAG, "[4.0] Create and start input key service");
-    input_key_service_info_t input_key_info[] = INPUT_KEY_DEFAULT_INFO();
-    input_key_service_cfg_t input_cfg = _INPUT_KEY_SERVICE_DEFAULT_CONFIG();
-    input_cfg.handle = set;
-    periph_service_handle_t input_ser = input_key_service_create(&input_cfg);
-    input_key_service_add_key(input_ser, input_key_info, INPUT_KEY_NUM);
-    periph_service_set_callback(input_ser, input_key_service_cb, (void *)ftcSoundBar.pipeline.getBoardHandle());
+    if (ftcSoundBar.I2C_MODE) {
 
-    ESP_LOGI(TAG, "[5.0] Press the keys to control music player:");
-    ESP_LOGI(TAG, "      [Play] to start, pause and resume, [Set] next song.");
-    ESP_LOGI(TAG, "      [Vol-] or [Vol+] to adjust volume.");
+   	    ESP_LOGI(TAG, "[4.0] Start I2C Interface");
+        ESP_ERROR_CHECK( i2c_slave_init() );
 
-    ESP_LOGI(TAG, "[6.0] Start Web Server");
+    } else {
+
+    	ESP_LOGI(TAG, "[4.0] Create and start input key service");
+        ESP_LOGI(TAG, "      Press the keys to control music player:");
+        ESP_LOGI(TAG, "      [Play] to start, pause and resume, [Set] next song.");
+        ESP_LOGI(TAG, "      [Vol-] or [Vol+] to adjust volume.");
+
+        audio_board_key_init(set);
+        input_key_service_info_t input_key_info[] = INPUT_KEY_DEFAULT_INFO();
+    	input_key_service_cfg_t input_cfg = _INPUT_KEY_SERVICE_DEFAULT_CONFIG();
+    	input_cfg.handle = set;
+    	periph_service_handle_t input_ser = input_key_service_create(&input_cfg);
+    	input_key_service_add_key(input_ser, input_key_info, INPUT_KEY_NUM);
+    	periph_service_set_callback(input_ser, input_key_service_cb, (void *)ftcSoundBar.pipeline.getBoardHandle());
+
+    }
+
+    ESP_LOGI(TAG, "[5.0] Start Web Server");
     ESP_ERROR_CHECK( start_web_server( "localhost" ) );
+
+    ESP_LOGI(TAG, "[6.0] Set volume");
+    ftcSoundBar.pipeline.setVolume( ftcSoundBar.STARTUP_VOLUME );
 
     ESP_LOGI(TAG, "[7.0] Everything started");
 
-    ftcSoundBar.pipeline.setVolume(15);
+    audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
+    audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
+    ftcSoundBar.pipeline.setListener( evt );
 
-   	ftcSoundBar.pipeline.eventLoop();
+    // run forever
+    while (1) {
+
+    	if ( ftcSoundBar.I2C_MODE) { i2c_task(); };
+
+    	// check on new song / repeat & shuffle
+    	audio_event_iface_msg_t msg;
+    	esp_err_t ret = audio_event_iface_listen(evt, &msg, 10);
+    	if (ret == ESP_OK) { ftcSoundBar.pipeline.audioMessageHandler( msg ); }
+
+    }
 
 }
