@@ -13,4 +13,4 @@ Please checkout the <a href="https://github.com/elektrofuzzis/ftcSoundBar/wiki/"
 
 # IMPORTANT
 
-With firmware version V1.2 the I²C-interface was implemented in the ftcSoundBar's firmware. To get the interface running, the cabling of your ftcSoundBar board differs from the description in the ft:pedia article. Please refer to <a href="https://github.com/elektrofuzzis/ftcSoundBar/wiki/Build-your-own-ftcSoundBar">Build your own ftcSoundBar wiki</a> for correct cabling.
+With firmware version V1.2 the I²C-interface was implemented in the ftcSoundBar's firmware. To get the interface running, the cabling of your ftcSoundBar board differs from the description in the ft:pedia article. Please refer to <a href="https://github.com/elektrofuzzis/ftcSoundBar/wiki/Build-your-own-ftcSoundBar">"Build your own ftcSoundBar"</a> for correct cabling.
