@@ -7,4 +7,4 @@ It has multiple connectors, so you could use it in various configurations:
 - wifi based RESTAPI
 - I2C-bus Interface
 
-Please checkout the article about ftcSoundBar in <a href="https://ftcommunity.de/ftpedia/2020/2020-4/ftpedia-2020-4.pdf#page=73">ft:pedia 4/2020</a>.
+Please checkout the <a href="https://github.com/elektrofuzzis/ftcSoundBar/wiki/">ftcSoundBar wiki</a> and the article about ftcSoundBar in <a href="https://ftcommunity.de/ftpedia/2020/2020-4/ftpedia-2020-4.pdf#page=73">ft:pedia 4/2020</a>.
