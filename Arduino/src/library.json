@@ -1,0 +1,16 @@
+{
+  "name": "ftcSoundBar",
+  "keywords": "ftcSoundBar",
+  "description": "Interface libray to control a ftcSoundBar sound card with arduino or ftDuino boards.",
+  "repository":
+  {
+    "type": "git",
+    "url": "https://github.com/electrofuzzis/ftcSoundBar"
+  },
+  "frameworks": "arduino",
+  "platforms":
+  [
+    "atmelavr",
+    "ftDuino"
+  ]
+}

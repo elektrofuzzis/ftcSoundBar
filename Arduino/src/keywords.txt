@@ -1,0 +1,47 @@
+#######################################
+# Syntax Coloring Map For ftcSoundBar
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+FtcSoundBar	KEYWORD1
+state_t	KEYWORD1
+play_mode_t	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+Watchdog	KEYWORD2
+i2cSend	KEYWORD2
+i2cReceive	KEYWORD2
+play	KEYWORD2
+setVolume	KEYWORD2
+getVolume	KEYWORD2
+stop	KEYWORD2
+pause	KEYWORD2
+resume	KEYWORD2
+setMode	KEYWORD2
+getMode	KEYWORD2
+getTracks	KEYWORD2
+getActiveTrack	KEYWORD2
+getTrackState	KEYWORD2
+next	KEYWORD2
+previous	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+MODE_NORMAL	LITERAL1
+MODE_SHUFFLE	LITERAL1
+MODE_REPEAT	LITERAL1
+STATE_NONE	LITERAL1
+STATE_INIT	LITERAL1
+STATE_RUNNING	LITERAL1
+STATE_PAUSED	LITERAL1
+STATE_STOPPED	LITERAL1
+STATE_FINISHED	LITERAL1 
+STATE_ERROR	LITERAL1
