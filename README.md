@@ -1,2 +1,8 @@
 # ftcSoundBar
-MP3-player with hifi sound for fischertechnik TXT controllers. Since the ftcSoundBar is based on a RESTapi, it is easy to adapt the board in any DIY project. 
+
+ftcSoundBar is a sound card for Arduino, ftDuino and fischertechnik TXT/TX-Controllers based on an espressif LyraT board.
+
+It has multiple connectors, so you could use it in various configurations:
+- wifi based WEB-UI
+- wifi based RESTAPI
+- I2C-bus Interface
