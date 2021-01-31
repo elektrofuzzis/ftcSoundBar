@@ -8,3 +8,5 @@ It has multiple connectors, so you could use it in various configurations:
 - I2C-bus Interface
 
 Please checkout the <a href="https://github.com/elektrofuzzis/ftcSoundBar/wiki/">ftcSoundBar wiki</a> and the article about ftcSoundBar in <a href="https://ftcommunity.de/ftpedia/2020/2020-4/ftpedia-2020-4.pdf#page=73">ft:pedia 4/2020</a>.
+
+<img src="wikifiles/ftcSoundBar.png" width="50%">
