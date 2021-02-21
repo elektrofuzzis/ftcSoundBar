@@ -3,7 +3,7 @@
  *
  * ftcSoundBar - a LyraT based fischertechnik compatible music box.
  *
- * Version 0.1
+ * Version 1.3
  *
  * (C) 2020 Oliver Schmied, Christian Bergschneider & Stefan Fuss
  *
@@ -13,6 +13,8 @@
  * COMPONENT-CONFIGURATION/FAT FILESYSTEM SUPPORT: long filename support, UTF 8 encoding
  *
  ****************************************************************************************/
+
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 
 #include <esp_wifi.h>
 #include <esp_event.h>
@@ -38,32 +40,26 @@
 #include <periph_wifi.h>
 #include <esp_task_wdt.h>
 
-//#include <driver/i2c.h>
-
 #include "adfcorrections.h"
 #include "playlist.h"
 #include "pipeline.h"
 #include "ftcSoundBar.h"
+#include "blink.h"
+#include "ota.h"
 
 extern "C" {
     void app_main(void);
 }
 
-#define FIRMWARE_VERSION "v1.2"
-
-// DEBUGREST shows detailed informations during RESTAPI calls
-// #define DEBUGREST
+#define FIRMWARE_VERSION "v1.30"
 
 #define CONFIG_FILE "/sdcard/ftcSoundBar.conf"
 static const char *TAG = "ftcSoundBar";
 #define FIRMWAREUPDATE "/sdcard/ftcSoundBar.bin"
-
+#define FIRMWARELOADER "/sdcard/loader.bin"
 
 static EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
-
-#define BUFFSIZE 1024
-static char ota_write_data[BUFFSIZE + 1] = { 0 };
 
 #define BLINK_GPIO 22
 
@@ -80,7 +76,6 @@ static char ota_write_data[BUFFSIZE + 1] = { 0 };
 #define I2C_SLAVE_TX_BUF_LEN (2 * I2C_DATA_LENGTH)  /*!< I2C slave tx buffer size */
 #define I2C_SLAVE_RX_BUF_LEN (2 * I2C_DATA_LENGTH)  /*!< I2C slave rx buffer size */
 #define I2C_SLAVE_ADDR 0x33
-
 
 typedef struct http_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
@@ -103,6 +98,7 @@ esp_err_t audio_element_event_handler(audio_element_handle_t self, audio_event_i
  *
  **************************************************************************************/
 
+
 void task_reboot(void *pvParameter)
 {
 	ESP_LOGI( TAG, "I will reboot in 0.5s...");
@@ -114,152 +110,19 @@ void task_reboot(void *pvParameter)
 void task_blinky(void *pvParameter)
 {
 
-    gpio_pad_select_gpio(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction((gpio_num_t)BLINK_GPIO, GPIO_MODE_OUTPUT);
     while( 1 ) {
-        /* Blink off (output low) */
-        gpio_set_level((gpio_num_t)BLINK_GPIO, 0);
-        vTaskDelay(250 / portTICK_RATE_MS);
-        /* Blink on (output high) */
-        gpio_set_level((gpio_num_t)BLINK_GPIO, 1);
-        vTaskDelay(250 / portTICK_RATE_MS);
+    	blink(250, 250 );
     }
 
 }
 
-#define OTATAG "OTA"
-
-static void __attribute__((noreturn)) task_fatal_error()
-{
-    ESP_LOGE(OTATAG, "Exiting task due to fatal error...");
-    (void)vTaskDelete(NULL);
-
-    while (1) {
-        ;
-    }
-}
 
 void task_ota(void *pvParameter)
 {
-    esp_err_t err;
-    /* update handle : set by esp_ota_begin(), must be freed via esp_ota_end() */
-    esp_ota_handle_t update_handle = 0 ;
-    const esp_partition_t *update_partition = NULL;
 
-    ESP_LOGI(OTATAG, "Starting OTA...");
-
-    xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
-
-    const esp_partition_t *configured = esp_ota_get_boot_partition();
-    const esp_partition_t *running = esp_ota_get_running_partition();
-
-    if (configured != running) {
-        ESP_LOGW(OTATAG, "Configured OTA boot partition at offset 0x%08x, but running from offset 0x%08x",
-                 configured->address, running->address);
-        ESP_LOGW(OTATAG, "(This can happen if either the OTA boot data or preferred boot image become corrupted somehow.)");
-    }
-    ESP_LOGI(OTATAG, "Running partition type %d subtype %d (offset 0x%08x)",
-             running->type, running->subtype, running->address);
-
-    FILE *f;
-    f = fopen(FIRMWAREUPDATE, "rb");
-    if ( f == NULL ) {
-    	ESP_LOGI( TAG, "ftcSoundBar.bin not found");
-    	task_fatal_error();
-    }
-
-    update_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_LOGI(OTATAG, "Writing to partition subtype %d at offset 0x%x",
-             update_partition->subtype, update_partition->address);
-    assert(update_partition != NULL);
-
-    int binary_file_length = 0;
-     /*deal with all receive packet*/
-     bool image_header_was_checked = false;
-     while (1) {
-    	 //int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
-         int data_read = fread( ota_write_data, 1, BUFFSIZE, f );
-         ESP_LOGI( OTATAG, "data_read=%d", data_read);
-         if (data_read < 0) {
-             ESP_LOGE(OTATAG, "Error: file data read error");
-             task_fatal_error();
-         } else if (data_read > 0) {
-             if (image_header_was_checked == false) {
-                 esp_app_desc_t new_app_info;
-                 if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
-                     // check current version with downloading
-                     memcpy(&new_app_info, &ota_write_data[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
-                     ESP_LOGI(OTATAG, "New firmware version: %s", new_app_info.version);
-
-                     esp_app_desc_t running_app_info;
-                     if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
-                         ESP_LOGI(OTATAG, "Running firmware version: %s", running_app_info.version);
-                     }
-
-                     const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
-                     esp_app_desc_t invalid_app_info;
-                     if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK) {
-                         ESP_LOGI(OTATAG, "Last invalid firmware version: %s", invalid_app_info.version);
-                     }
-
-                     // check current version with last invalid partition
-                     if (last_invalid_app != NULL) {
-                         if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0) {
-                             ESP_LOGW(OTATAG, "New version is the same as invalid version.");
-                             ESP_LOGW(OTATAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
-                             ESP_LOGW(OTATAG, "The firmware has been rolled back to the previous version.");
-                             task_fatal_error();
-                         }
-                     }
-
-                     image_header_was_checked = true;
-
-                     err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
-                     if (err != ESP_OK) {
-                         ESP_LOGE(OTATAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
-                         task_fatal_error();
-                     }
-                     ESP_LOGI(OTATAG, "esp_ota_begin succeeded");
-                 } else {
-                     ESP_LOGE(OTATAG, "received package is not fit len");
-                     task_fatal_error();
-                 }
-             }
-             err = esp_ota_write( update_handle, (const void *)ota_write_data, data_read);
-             if (err != ESP_OK) {
-                 task_fatal_error();
-             }
-             binary_file_length += data_read;
-             ESP_LOGD(OTATAG, "Written image length %d", binary_file_length);
-         } else if (data_read == 0) {
-
-                 ESP_LOGI(OTATAG, "EOF");
-                 break;
-
-        }
-     }
-     ESP_LOGI(OTATAG, "Total Write binary data length: %d", binary_file_length);
-
-     fclose(f);
-
-     err = esp_ota_end(update_handle);
-     if (err != ESP_OK) {
-         if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
-             ESP_LOGE(OTATAG, "Image validation failed, image is corrupted");
-         }
-         ESP_LOGE(OTATAG, "esp_ota_end failed (%s)!", esp_err_to_name(err));
-         task_fatal_error();
-     }
-
-     err = esp_ota_set_boot_partition(update_partition);
-     if (err != ESP_OK) {
-         ESP_LOGE(OTATAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
-         task_fatal_error();
-     }
-     ESP_LOGI(OTATAG, "Prepare to restart system!");
-
-    esp_restart();
+	ota( TAG, FIRMWARELOADER);
 
 }
 
@@ -562,7 +425,8 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 	httpd_resp_sendstr_chunk_cr(req, "<table>" );
 
 	// Buttons
-	if ( access( FIRMWAREUPDATE, F_OK ) != -1 ) {
+	if ( ( access( FIRMWAREUPDATE, F_OK ) != -1 ) &&
+         ( access( FIRMWARELOADER, F_OK ) != -1 ) ) {
 		sprintf( line, "<tr><td><button type=\"button\" onclick=\"ota()\">update firmware</button></td><td><button type=\"button\" onclick=\"save_config('%s')\">save configuration</button></td></tr>", ftcSoundBar.HOSTNAME);
 		httpd_resp_sendstr_chunk(req, line );
 	} else {
@@ -577,7 +441,7 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 	/* Send empty chunk to signal HTTP response completion */
     httpd_resp_sendstr_chunk(req, NULL);
 
-	return ESP_OK;
+    return ESP_OK;
 }
 
 /**
@@ -711,17 +575,35 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 	/* Send empty chunk to signal HTTP response completion */
     httpd_resp_sendstr_chunk(req, NULL);
 
-	return ESP_OK;
+    return ESP_OK;
 }
 
 #define TAGAPI "::API"
 
+ static esp_err_t tracks_get_handler(httpd_req_t *req)
+ {	char tag[20];
+
+     ESP_LOGD( TAGAPI, "GET tracks" );
+
+     httpd_resp_set_type(req, "application/json");
+
+     cJSON *root = cJSON_CreateObject();
+     cJSON_AddNumberToObject(root, "tracks", ftcSoundBar.pipeline.playList.getTracks() );
+     const char *sys_info = cJSON_Print(root);
+     httpd_resp_sendstr(req, sys_info);
+
+ 	 ESP_LOGD( TAGAPI, "GET tracks: %s", sys_info);
+
+     free((void *)sys_info);
+     cJSON_Delete(root);
+
+     return ESP_OK;
+ }
+
 static esp_err_t track_get_handler(httpd_req_t *req)
 {	char tag[20];
 
-	#ifdef DEBUGREST
-    	ESP_LOGI( TAGAPI, "GET track" );
-	#endif
+	ESP_LOGD( TAGAPI, "GET track" );
 
     httpd_resp_set_type(req, "application/json");
 
@@ -739,45 +621,40 @@ static esp_err_t track_get_handler(httpd_req_t *req)
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
 
-	#ifdef DEBUGREST
-    	ESP_LOGI( TAGAPI, "GET track: %s", sys_info);
-	#endif
+	ESP_LOGD( TAGAPI, "GET track: %s", sys_info);
 
     free((void *)sys_info);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
 static esp_err_t active_track_get_handler(httpd_req_t *req)
 {
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "GET activeTrack" );
-	#endif
+	ESP_LOGD( TAGAPI, "GET activeTrack" );
 
     httpd_resp_set_type(req, "application/json");
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "activeTrack", ftcSoundBar.pipeline.playList.getActiveTrack() );
+    cJSON_AddNumberToObject(root, "activeTrackNr", ftcSoundBar.pipeline.playList.getActiveTrackNr() );
     cJSON_AddNumberToObject(root, "mode", ftcSoundBar.pipeline.getMode() );
     cJSON_AddNumberToObject(root, "state", ftcSoundBar.pipeline.getState() );
 
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
 
-	#ifdef DEBUGREST
-    	ESP_LOGI( TAGAPI, "GET track: %s", sys_info);
-	#endif
+	ESP_LOGD( TAGAPI, "GET track: %s", sys_info);
 
     free((void *)sys_info);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
 static esp_err_t volume_get_handler(httpd_req_t *req)
 {
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "GET volume" );
-	#endif
+	ESP_LOGD( TAGAPI, "GET volume" );
 
     httpd_resp_set_type(req, "application/json");
     cJSON *root = cJSON_CreateObject();
@@ -785,12 +662,11 @@ static esp_err_t volume_get_handler(httpd_req_t *req)
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
 
-    #ifdef DEBUGREST
-    	ESP_LOGI( TAGAPI, "GET volume: %s", sys_info);
-	#endif
+    ESP_LOGD( TAGAPI, "GET volume: %s", sys_info);
 
     free((void *)sys_info);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
@@ -802,18 +678,18 @@ static esp_err_t mode_get_handler(httpd_req_t *req)
     const char *sys_info = cJSON_Print(root);
     httpd_resp_sendstr(req, sys_info);
 
-	#ifdef DEBUGREST
-    	ESP_LOGI( TAGAPI, "GET mode: %s", sys_info);
-	#endif
+	ESP_LOGD( TAGAPI, "GET mode: %s", sys_info);
 
     free((void *)sys_info);
     cJSON_Delete(root);
+
     return ESP_OK;
 }
 
 static char *getBody(httpd_req_t *req)
 {
-    int total_len = req->content_len;
+
+	int total_len = req->content_len;
     int cur_len = 0;
     char *buf = ((http_server_context_t *)(req->user_ctx))->scratch;
     int received = 0;
@@ -836,19 +712,15 @@ static char *getBody(httpd_req_t *req)
     return buf;
 }
 
-static esp_err_t play_post_handler(httpd_req_t *req) {
-
+static esp_err_t play_post_handler(httpd_req_t *req)
+{
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST play: <null>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST play: <null>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST play: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST play: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -862,6 +734,7 @@ static esp_err_t play_post_handler(httpd_req_t *req) {
     ftcSoundBar.pipeline.play( );
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -869,15 +742,11 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
 
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST config: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST config: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST config: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST config: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -902,6 +771,7 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     xTaskCreate(&task_reboot, "reboot", 512, NULL, 5, NULL );
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -909,15 +779,11 @@ static esp_err_t ota_post_handler(httpd_req_t *req) {
 
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST ota: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST ota: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST ota: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST ota: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     if ( root == NULL ) { return ESP_FAIL; }
@@ -926,6 +792,7 @@ static esp_err_t ota_post_handler(httpd_req_t *req) {
     xTaskCreate(&task_ota, "ota", 8192, NULL, 5, NULL );
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -934,15 +801,11 @@ static esp_err_t volume_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST volumne: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST volumne: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST volume: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST volume: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     cJSON *JSONvolume = cJSON_GetObjectItem(root, "volume");
@@ -962,6 +825,7 @@ static esp_err_t volume_post_handler(httpd_req_t *req)
     }
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -969,20 +833,17 @@ static esp_err_t previous_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST previous: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST previous: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST previous: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST previous: %s", body);
 
     ftcSoundBar.pipeline.playList.prevTrack();
     ftcSoundBar.pipeline.play( );
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -990,20 +851,17 @@ static esp_err_t next_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST next: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST next: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST next: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST next: %s", body);
 
 	ftcSoundBar.pipeline.playList.nextTrack();
     ftcSoundBar.pipeline.play( );
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -1011,20 +869,17 @@ static esp_err_t stop_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST stop: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST stop: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST stop: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST stop: %s", body);
 
 	ftcSoundBar.pipeline.stop();
 	ftcSoundBar.pipeline.setMode( MODE_SINGLE_TRACK );
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -1032,15 +887,11 @@ static esp_err_t mode_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST mode: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST mode: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST mode: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST mode: %s", body);
 
     cJSON *root = cJSON_Parse(body);
     int mode = cJSON_GetObjectItem(root, "mode")->valueint;
@@ -1048,6 +899,7 @@ static esp_err_t mode_post_handler(httpd_req_t *req)
 
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -1055,19 +907,16 @@ static esp_err_t pause_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-		#ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST pause: <NULL>");
-		#endif
+		ESP_LOGD( TAGAPI, "POST pause: <NULL>");
 		return ESP_FAIL;
 	}
 
-	#ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST pause: %s", body);
-	#endif
+	ESP_LOGD( TAGAPI, "POST pause: %s", body);
 
     ftcSoundBar.pipeline.pause();
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -1075,19 +924,16 @@ static esp_err_t resume_post_handler(httpd_req_t *req)
 {
 	char *body = getBody(req);
 	if (body==NULL) {
-        #ifdef DEBUGREST
-			ESP_LOGI( TAGAPI, "POST resume: <NULL>");
-		#endif
+        ESP_LOGD( TAGAPI, "POST resume: <NULL>");
 		return ESP_FAIL;
 	}
 
-    #ifdef DEBUGREST
-		ESP_LOGI( TAGAPI, "POST resume: %s", body);
-	#endif
+    ESP_LOGD( TAGAPI, "POST resume: %s", body);
 
     ftcSoundBar.pipeline.resume();
 
     httpd_resp_sendstr(req, "Post control value successfully");
+
     return ESP_OK;
 }
 
@@ -1130,8 +976,13 @@ esp_err_t start_web_server( const char *base_path )
     httpd_register_uri_handler(server, &favico);
 
     // API
+    // track
     httpd_uri_t track_get_uri = {.uri = "/api/track", .method = HTTP_GET, .handler = track_get_handler, .user_ctx = NULL };
     httpd_register_uri_handler(server, &track_get_uri);
+
+    // tracks
+    httpd_uri_t tracks_get_uri = {.uri = "/api/tracks", .method = HTTP_GET, .handler = tracks_get_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(server, &tracks_get_uri);
 
     // active_track
     httpd_uri_t active_track_html = { .uri = "/api/activeTrack", .method = HTTP_GET, .handler = active_track_get_handler, .user_ctx = NULL };
@@ -1186,11 +1037,11 @@ esp_err_t start_web_server( const char *base_path )
 
 esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 {
-	ESP_LOGI(TAGWIFI, "wifi_event_handler");
+	ESP_LOGD(TAGWIFI, "wifi_event_handler");
 
     switch(event->event_id) {
     case SYSTEM_EVENT_STA_START:
-        ESP_LOGI(TAGWIFI, "SYSTEM_EVENT_STA_START");
+        ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_START");
         ESP_ERROR_CHECK( esp_wifi_connect() );
         ESP_ERROR_CHECK( tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, ftcSoundBar.HOSTNAME) );
 
@@ -1210,13 +1061,13 @@ esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 
         break;
     case SYSTEM_EVENT_STA_GOT_IP:
-    	ESP_LOGI(TAGWIFI, "SYSTEM_EVENT_STA_GOT_IP");
-        ESP_LOGI(TAGWIFI, "Got IP: '%s'",
+    	ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_GOT_IP");
+        ESP_LOGD(TAGWIFI, "Got IP: '%s'",
                 ip4addr_ntoa((ip4_addr_t*) &event->event_info.got_ip.ip_info.ip));
         xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
-        ESP_LOGI(TAGWIFI, "SYSTEM_EVENT_STA_DISCONNECTED");
+        ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_DISCONNECTED");
         ESP_ERROR_CHECK(esp_wifi_connect());
         break;
     default:
@@ -1288,7 +1139,7 @@ static esp_err_t input_key_service_cb(periph_service_handle_t handle, periph_ser
                         ftcSoundBar.pipeline.resume();
                         break;
                     default :
-                        ESP_LOGI(TAGKEY, "[ * ] Not supported state %d", el_state);
+                        ESP_LOGE(TAGKEY, "[ * ] Not supported state %d", el_state);
                 }
                 break; }
             case INPUT_KEY_USER_ID_SET:
@@ -1372,69 +1223,71 @@ static void i2c_task(void)
    	bytes_read = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, 5, 0);
 
    	if (bytes_read > 0 ) {
-    	printf("%d bytes read.", bytes_read);
+   		ESP_LOGD(TAGI2C, "%d bytes read.", bytes_read);
     	switch (data[0]) {
     	case I2C_CMD_PLAY:
-			ESP_LOGI(TAGI2C, "play %d", data[1]);
+			ESP_LOGD(TAGI2C, "play %d", data[1]);
 			ftcSoundBar.pipeline.playList.setActiveTrackNr( data[1] );
 			ftcSoundBar.pipeline.play();
 			break;
     	case I2C_CMD_SET_VOLUME:
-			ESP_LOGI(TAGI2C, "set volume %d", data[1]);
+			ESP_LOGD(TAGI2C, "set volume %d", data[1]);
 			ftcSoundBar.pipeline.setVolume( data[1] );
 			break;
     	case I2C_CMD_GET_VOLUME:
-			ESP_LOGI(TAGI2C, "get volume" );
+			ESP_LOGD(TAGI2C, "get volume" );
 			result[0] = ftcSoundBar.pipeline.getVolume();
 			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
 			break;
     	case I2C_CMD_STOP_TRACK:
-			ESP_LOGI(TAGI2C, "stop" );
+			ESP_LOGD(TAGI2C, "stop" );
 			ftcSoundBar.pipeline.stop();
 			break;
     	case I2C_CMD_PAUSE_TRACK:
-			ESP_LOGI(TAGI2C, "pause" );
+			ESP_LOGD(TAGI2C, "pause" );
 			ftcSoundBar.pipeline.pause();
 			break;
     	case I2C_CMD_RESUME_TRACK:
-			ESP_LOGI(TAGI2C, "resume");
+			ESP_LOGD(TAGI2C, "resume");
 			ftcSoundBar.pipeline.resume();
 			break;
     	case I2C_CMD_SET_MODE:
-			ESP_LOGI(TAGI2C, "set mode %d", data[1]);
+			ESP_LOGD(TAGI2C, "set mode %d", data[1]);
 			ftcSoundBar.pipeline.setMode( (play_mode_t) data[1] );
 			break;
     	case I2C_CMD_GET_MODE:
-			ESP_LOGI(TAGI2C, "get mode" );
+			ESP_LOGD(TAGI2C, "get mode" );
 			result[0] = ftcSoundBar.pipeline.getMode();
 			i2c_reset_tx_fifo(I2C_SLAVE_NUM);
 			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
 			break;
     	case I2C_CMD_GET_TRACKS:
-			ESP_LOGI(TAGI2C, "get tacks");
+			ESP_LOGD(TAGI2C, "get tacks");
 			result[0] = ftcSoundBar.pipeline.playList.getTracks();
 			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
 			break;
     	case I2C_CMD_GET_ACTIVE_TRACK:
-			ESP_LOGI(TAGI2C, "get active track");
+			ESP_LOGD(TAGI2C, "get active track");
 			result[0] = ftcSoundBar.pipeline.playList.getActiveTrackNr();
 			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
 			break;
     	case I2C_CMD_GET_TRACK_STATE:
-			ESP_LOGI(TAGI2C, "get track state");
+			ESP_LOGD(TAGI2C, "get track state");
 			result[0] = ftcSoundBar.pipeline.getState();
 			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
 			break;
     	case I2C_CMD_NEXT:
-			ESP_LOGI(TAGI2C, "next");
+			ESP_LOGD(TAGI2C, "next");
 			ftcSoundBar.pipeline.playList.nextTrack();
+			ftcSoundBar.pipeline.play( );
 			break;
     	case I2C_CMD_PREVIOUS:
-			ESP_LOGI(TAGI2C, "previous");
+			ESP_LOGD(TAGI2C, "previous");
 			ftcSoundBar.pipeline.playList.prevTrack();
+			ftcSoundBar.pipeline.play( );
 			break;
     	default:
-    		ESP_LOGI(TAGI2C, "unkown cmd");
+    		ESP_LOGE(TAGI2C, "unkown cmd");
     		disp_buf(data, bytes_read);
 			break;
     	}
@@ -1447,25 +1300,37 @@ void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
 
-    ESP_LOGI(TAG, "ftSoundBar startup" );
-    ESP_LOGI(TAG, "(C) 2020/21 Idee: Oliver Schmiel, Programmierung: Christian Bergschneider, Stefan Fuss" );
+	ESP_LOGI(TAG, "**********************************************************************************************");
+	ESP_LOGI(TAG, "*                                                                                            *");
+	ESP_LOGI(TAG, "*                                      ftcSoundBars                                           *");
+	ESP_LOGI(TAG, "*  (C) 2021 Idee: Oliver Schmiel, Programmierung: Christian Bergschneider & Stefan Fuss      *");
+	ESP_LOGI(TAG, "*                                        Version %s                                       *", FIRMWARE_VERSION);
+	ESP_LOGI(TAG, "*                                                                                            *");
+	ESP_LOGI(TAG, "**********************************************************************************************");
+	ESP_LOGI(TAG, "");
 
-    xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
+	xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
 
     nvs_flash_init();
 
     ESP_LOGI(TAG, "[1.0] Initialize peripherals management");
     esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
     esp_periph_set_handle_t set = esp_periph_set_init(&periph_cfg);
+    gpio_pad_select_gpio(BLINK_GPIO);
 
     ESP_LOGI(TAG, "[1.1] Initialize and start peripherals");
     audio_board_sdcard_init(set, SD_MODE_1_LINE);
+
 
     ESP_LOGI(TAG, "[1.2] Set up a sdcard playlist and scan sdcard music save to it");
     ftcSoundBar.pipeline.playList.readDir( "/sdcard" );
 
     ESP_LOGI(TAG, "[1.3] read config file");
     ftcSoundBar.readConfigFile( (char *) CONFIG_FILE );
+    if (ftcSoundBar.DEBUG) {
+    	ESP_LOGI( TAG, "Set log level to debug.");
+    	esp_log_level_set("*", ESP_LOG_DEBUG);
+    }
 
     ESP_LOGI(TAG, "[2.0] Initialize wifi" );
     init_wifi();

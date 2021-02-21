@@ -38,30 +38,30 @@ void Pipeline::StartCodec(void) {
 	board_handle = audio_board_init();
 	audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
 
-	ESP_LOGI(TAGPIPELINE, "Create audio pipeline for playback");
+	ESP_LOGD(TAGPIPELINE, "Create audio pipeline for playback");
 	audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
 	pipeline = audio_pipeline_init(&pipeline_cfg);
 	mem_assert(pipeline);
 
-	ESP_LOGI(TAGPIPELINE, "Create fatfs stream to read data from sdcard");
+	ESP_LOGD(TAGPIPELINE, "Create fatfs stream to read data from sdcard");
 	fatfs_stream_cfg_t fatfs_cfg = FATFS_STREAM_CFG_DEFAULT();
 	fatfs_cfg.type = AUDIO_STREAM_READER;
 	fatfs_stream_reader = fatfs_stream_init(&fatfs_cfg);
 
-	ESP_LOGI(TAGPIPELINE, "Create i2s stream to write data to codec chip");
+	ESP_LOGD(TAGPIPELINE, "Create i2s stream to write data to codec chip");
 	i2s_stream_cfg_t i2s_cfg = _I2S_STREAM_CFG_DEFAULT();
 	i2s_cfg.type = AUDIO_STREAM_WRITER;
 	i2s_stream_writer = i2s_stream_init(&i2s_cfg);
 
-	ESP_LOGI(TAGPIPELINE, "Create mp3 decoder to decode mp3 file");
+	ESP_LOGD(TAGPIPELINE, "Create mp3 decoder to decode mp3 file");
 	mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
 	decoder_mp3 = mp3_decoder_init(&mp3_cfg);
 
-	ESP_LOGI(TAGPIPELINE, "Create wav decoder to decode wav file");
+	ESP_LOGD(TAGPIPELINE, "Create wav decoder to decode wav file");
 	wav_decoder_cfg_t wav_cfg = DEFAULT_WAV_DECODER_CONFIG();
 	decoder_wav = wav_decoder_init(&wav_cfg);
 
-	ESP_LOGI(TAGPIPELINE, "Create ogg decoder to decode ogg file");
+	ESP_LOGD(TAGPIPELINE, "Create ogg decoder to decode ogg file");
 	ogg_decoder_cfg_t ogg_cfg = DEFAULT_OGG_DECODER_CONFIG();
 	decoder_ogg = ogg_decoder_init(&ogg_cfg);
 
@@ -101,7 +101,7 @@ void Pipeline::build( audio_filetype_t filetype )
 	//audio_element_set_event_callback(fatfs_stream_reader, audio_element_event_handler, NULL);
 	//audio_element_set_event_callback(i2s_stream_writer, audio_element_event_handler, NULL);
 
-	ESP_LOGI(TAGPIPELINE, "Link it together [sdcard]-->fatfs_stream-->decoder-->i2s_stream-->[codec_chip]");
+	ESP_LOGD(TAGPIPELINE, "Link it together [sdcard]-->fatfs_stream-->decoder-->i2s_stream-->[codec_chip]");
 	const char *link_tag[3] = {"file", "decoder", "i2s"};
 	audio_pipeline_link(pipeline, &link_tag[0], 3);
 
@@ -109,7 +109,7 @@ void Pipeline::build( audio_filetype_t filetype )
 
 void Pipeline::stop( void ) {
 
-	ESP_LOGI( TAGPIPELINE, "stop_track");
+	ESP_LOGD( TAGPIPELINE, "stop_track");
 
 	audio_pipeline_stop(pipeline);
 	audio_pipeline_wait_for_stop(pipeline);
@@ -126,16 +126,16 @@ void Pipeline::play( void ) {
 void Pipeline::play( char *url, audio_filetype_t filetype) {
 
 	if (playList.getActiveTrackNr()<0) {
-		ESP_LOGI( TAGPIPELINE, "PLAY: no valid track selected");
+		ESP_LOGD( TAGPIPELINE, "PLAY: no valid track selected");
 		return;
 	}
 
 	if ( filetype == FILETYPE_UNKOWN ) {
-		ESP_LOGI( TAGPIPELINE, "PLAY: FILETYPE_UNKOWN");
+		ESP_LOGD( TAGPIPELINE, "PLAY: FILETYPE_UNKOWN");
 		return;
 	}
 
-	ESP_LOGI( TAGPIPELINE, "PLAY: url=%s filetype=%d", url, filetype );
+	ESP_LOGD( TAGPIPELINE, "PLAY: url=%s filetype=%d", url, filetype );
 
     // stop running track
     //if ( audio_element_get_state(i2s_stream_writer) == AEL_STATE_RUNNING) {
@@ -143,7 +143,7 @@ void Pipeline::play( char *url, audio_filetype_t filetype) {
     //}
 
 	if (decoder_filetype != filetype ) {
-		ESP_LOGI( TAGPIPELINE, "PLAY: relink ");
+		ESP_LOGD( TAGPIPELINE, "PLAY: relink ");
 		build( filetype );
 
 	}
@@ -155,16 +155,16 @@ void Pipeline::play( char *url, audio_filetype_t filetype) {
 
     // start track
     err = audio_element_set_uri( fatfs_stream_reader, url2 );
-    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "PLAY: audio_element_set_uri: %s %d", url2, err ); }
+    if (err != ESP_OK) { ESP_LOGD( TAGPIPELINE, "PLAY: audio_element_set_uri: %s %d", url2, err ); }
 
     err = audio_pipeline_reset_ringbuffer( pipeline );
-    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "PLAY: audio_pipeline_reset_ringbuffer: %d", err ); }
+    if (err != ESP_OK) { ESP_LOGD( TAGPIPELINE, "PLAY: audio_pipeline_reset_ringbuffer: %d", err ); }
 
     err = audio_pipeline_reset_elements( pipeline );
-    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "PLAY: audio_pipeline_reset_elements: %d", err ); }
+    if (err != ESP_OK) { ESP_LOGD( TAGPIPELINE, "PLAY: audio_pipeline_reset_elements: %d", err ); }
 
     err = audio_pipeline_run( pipeline );
-    if (err != ESP_OK) { ESP_LOGI( TAGPIPELINE, "PLAY: audio_pipeline_run: %d", err ); }
+    if (err != ESP_OK) { ESP_LOGD( TAGPIPELINE, "PLAY: audio_pipeline_run: %d", err ); }
 
     free(url2);
 

@@ -4,13 +4,19 @@
 //
 // Communicate via ROBOPro from fischertechnik TXT Controller with ftcSoundBar
 //
-// Version 1.29
+// Version 1.31
 //
 // (C) 2020/21 Oliver Schmiel, Christian Bergschneider & Stefan Fuss
 //
 // compile to libftcSoundBar.so and copy it as User ROBOPRO to /opt/knobloch/libs
 //
 /////////////////////////////////////////////////////////////////////////////////////////
+
+// Version 1.31
+//
+// - API Update firmware 1.31
+// - refactoring json handling without jsmn.h due to stability problems 
+// - serialzeREST API requests dur to stability problems
 
 // Version 1.20:
 //
@@ -30,10 +36,10 @@ using namespace std;
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
-#include "jsmn/jsmn.h"
+#include <semaphore.h>
 
 // Library version
-const double MyVersion = 1.20;
+const double MyVersion = 1.31;
 
 // Error codes
 #define COM_OK                      0
@@ -48,21 +54,52 @@ const double MyVersion = 1.20;
 #define FISH_OK  0
 #define FISH_ERR 1
 
+// simple semaphore handling to serialze communication
+
+sem_t *mutex = NULL;
+
+// request mutex and initialize mutix on first call
+void request_mutex( void ) {
+	
+	sem_t x;
+	
+	// initialize mutex if needed
+	if (mutex == NULL) {
+		mutex=(sem_t*)malloc(sizeof(x));
+		sem_init(mutex, 0, 1);
+	}
+	
+	// get semaphore
+	sem_wait(mutex); 
+	
+}
+
+// release mutex
+void release_mutex( void ) {
+	
+	if (mutex != NULL ) {
+		sem_post(mutex);
+	}
+	
+}
+
+// define a ip address union
+
 union in_addr2 {
   unsigned long s_addr;
-  uint8_t octed[4];
+  uint8_t       octed[4];
 };
 
-#define MAXJSON 1000
+// simplyfied JSON handling, simple data types only
+
+#define MAXJSON 2000
 
 class JSON {
-	private:
-		int eq(jsmntok_t *tok, const char *s);
 	public:
 	    char jsonData[MAXJSON];
 		JSON();
 		int GetParam( char *tag, char *value );
-		int GetParam(  char *tag, short *value );
+		int GetParam( char *tag, short *value );
 		
 };
 
@@ -72,58 +109,90 @@ JSON::JSON() {
 
 }
 
-int JSON::eq(jsmntok_t *tok, const char *s) {
-  if (tok->type == JSMN_STRING && (int)strlen(s) == tok->end - tok->start &&
-      strncmp(jsonData + tok->start, s, tok->end - tok->start) == 0) {
-    return 0;
-  }
-  return -1;
-}
-
 int JSON::GetParam( char *tag, char *value ) {
-  
-  int i, tokens;
-  
-  jsmn_parser p;
-  jsmntok_t t[128]; /* We expect no more than 128 tokens */
-
-  jsmn_init(&p);
-  tokens = jsmn_parse(&p, jsonData, strlen(jsonData), t, sizeof(t) / sizeof(t[0]));
-  if (tokens < 0) {
-    return -1;
-  }
-
-  if (tokens < 1 || t[0].type != JSMN_OBJECT) {
-    return -2;
-  }
-
-  /* Loop over all keys of the root object */
-  for (i = 1; i < tokens; i++) {
-    if (eq(&t[i], tag) == 0) {
-      /* We may want to do strtol() here to get numeric value */
-      i++;
-      strncpy(value, jsonData + t[i].start, t[i].end - t[i].start);
-      value[ t[i].end - t[i].start ] = '\0';
-      i++;
-    } 
-  }
-
-  return 0;
+	// search for tag and return it's value
+	// if value is a string, strip trainling and ending "'s\n
+	// return 0 if tag is found, -1 on error
+	
+	FILE *f = fopen( "/tmp/ftcSoundBar.log", "wa" );
+	
+	char delimiters[] = "\t\n {}:,";
+	char *ptr;
+	
+	// complete search string to "tag"
+	char needle[200];
+	
+	needle[0] = '"';
+	strcpy( &needle[1], tag );
+	needle[strlen(tag)+1] = '"';
+	needle[strlen(tag)+2] = '\0';
+	
+	// split header into lines
+    ptr = strtok( jsonData, delimiters);
+	
+	// analyze tags and values
+    while ( ptr != NULL ) {
+		
+		fprintf( f, "tag=%s\n", ptr ); fflush(f);
+		
+		fprintf( f, "tag=%s needle=%s\n", ptr, needle ); fflush(f);
+		
+		if ( strcmp( ptr, needle ) == 0) {
+			// tag found, next field is value
+			
+			fprintf( f, "%s found", ptr ); fflush(f);
+			
+			ptr = strtok(NULL, delimiters);
+			
+			fprintf( f, "next object: %s", ptr ); fflush(f);
+			
+			if ( ptr == NULL ) {
+				// no data found
+				
+				value[0] = '\0';
+				fprintf( f, "no data found.\n" ); fclose( f );
+				return 0;
+				
+			} else {
+				
+				// data found
+				fprintf( f, "value: %s", ptr ); fclose( f );
+				
+				// copy data
+				strcpy( value, ptr );
+				
+				return 0;
+				
+			}
+		}
+		
+		// get next line
+		ptr = strtok(NULL, delimiters);
+	}
+	
+	fclose(f);
+	return -1;
+	
 }
 
-int JSON::GetParam(  char *tag, short *value ) {
+int JSON::GetParam( char *tag, short *value ){
+	// search for tag and return it's value
+	// if value is NAN, the function returns 0
+	// return 0 if tag is found, -1 on error
 
-  char temp[100];
-  int  err;
+	char temp[100];
+	int  err;
 
-  err = GetParam( tag, temp);
-  if ( err == 0) {
-    *value = atoi( temp );
-  }
+	err = GetParam( tag, temp);
+	if ( err == 0) {
+		*value = atoi( temp );
+	}
   
-  return err;
+	return err;
   
 }
+
+// Rest server to communicate with ftcSoundBar
 
 class RESTServer {
 	private:
@@ -322,12 +391,48 @@ int RESTServer::tcp_send_receive( char *request, char *responseHeader, int s_res
     // clear response
     bzero(responseHeader, s_responseHeader);
     bzero(responseData,   s_responseData);
-    
+	
 	// copy value, expect 2 packets
-    recv(tcpSocket, responseHeader, s_responseHeader-1, 0);
-	recv(tcpSocket, responseData, s_responseData-1, 0);
+    #ifdef LOGFILE
+	int header = recv(tcpSocket, responseHeader, s_responseHeader-1, 0);
+	int data   = recv(tcpSocket, responseData,   s_responseData-1,   0);
+	
+	# else
+	recv(tcpSocket, responseHeader, s_responseHeader-1, 0);
+	recv(tcpSocket, responseData,   s_responseData-1,   0);
+	
+	#endif
 	
 	close(tcpSocket);
+	
+	#ifdef LOGFILE
+	FILE *f = fopen( "/tmp/ftcSoundBar.log", "aw");
+    
+	fprintf( f, "******\n" ); fflush(f);
+	fprintf( f, "header: %d\n", header ); fflush(f);
+	fprintf( f, "data: %d\n", data ); fflush(f);
+	
+	char x[1010];
+	char y[1010];
+	
+	if ( (header > 0 ) && ( header < 1000 ) ) {
+	
+		strncpy( x, responseHeader, 1000 );
+		x[999] = '\0';
+		fprintf( f, "sheader: %s\n", x );
+		fflush(f);
+	}
+	
+	if ( (data > 0 ) && ( data < 1000 ) ) {
+	
+		strncpy( y, responseData, 1000 );
+		y[999] = '\0';
+		fprintf( f, "sdata: %s\n", y );
+		fflush(f);
+	}
+	
+	fclose(f);
+	#endif
 	
 	return COM_OK;
 
@@ -371,8 +476,8 @@ int RESTServer::http_get( char serviceMethod[], JSON *jsonData )
 	
 	// split header into lines
     ptr = strtok(responseHeader, delimiter);
-
-    // analyze lines in header
+	
+	// analyze lines in header
     while(ptr != NULL) {
 		
 		if ( strncmp( ptr, "HTTP/1.1 ", 9 ) == 0) {
@@ -402,10 +507,12 @@ int RESTServer::http_get( char serviceMethod[], JSON *jsonData )
 		return COM_ERR_ContentUncomplete;
 		
 	} 
-	
+
 	return status;
 	
 }
+
+
 
 /**
  * @brief      post a request to the RESTServer
@@ -465,7 +572,9 @@ extern "C" {
    */	
   int setPort(short port) {
 	  // set servers port
+	  request_mutex();
 	  ftcSoundBar.setPort( port );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -478,7 +587,9 @@ extern "C" {
    *		- FISH_OK
    */	
   int getPort(short *port) {
+	  request_mutex();
 	  *port = ftcSoundBar.getPort( );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -491,7 +602,9 @@ extern "C" {
    *		- FISH_OK
    */	
   int getIP0(short *octed) {
+	  request_mutex();
 	  *octed = ftcSoundBar.getOcted( 0 );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -504,7 +617,9 @@ extern "C" {
    *		- FISH_OK
    */  
   int getIP1(short *octed) {
+	  request_mutex();
 	  *octed = ftcSoundBar.getOcted( 1 );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -517,7 +632,9 @@ extern "C" {
    *		- FISH_OK
    */  
     int getIP2(short *octed) {
+	  request_mutex();
 	  *octed = ftcSoundBar.getOcted( 2 );
+	  release_mutex();
 	  return FISH_OK;
   }
  
@@ -530,7 +647,9 @@ extern "C" {
    *		- FISH_OK
    */ 
     int getIP3(short *octed) {
+	  request_mutex();
 	  *octed = ftcSoundBar.getOcted( 3 );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -544,7 +663,9 @@ extern "C" {
    */  
   int setIP0(short ip) {
 	  // set 1st octed of server IP
+	  request_mutex();
 	  ftcSoundBar.setOcted( 0, ip );
+	  release_mutex();
 	  return FISH_OK;
   }
  
@@ -558,7 +679,9 @@ extern "C" {
    */   
   int setIP1(short ip) {
 	  // set 2nd octed of server IP
+	  request_mutex();
 	  ftcSoundBar.setOcted( 1, ip );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -572,7 +695,9 @@ extern "C" {
    */  
   int setIP2(short ip) {
 	  // set 3rd octed of server IP
+	  request_mutex();
 	  ftcSoundBar.setOcted( 2, ip );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -586,7 +711,9 @@ extern "C" {
    */  
   int setIP3(short ip) {
 	  // set 4th octed of server IP
+	  request_mutex();
 	  ftcSoundBar.setOcted( 3, ip );
+	  release_mutex();
 	  return FISH_OK;
   }
 
@@ -601,11 +728,15 @@ extern "C" {
   int play(short track) {
 	  // play track #track
 	  
+	  request_mutex();
+	  
 	  char jsonData[100];
 	  
 	  sprintf( jsonData, "{\"track\": %hi}", track );
 	  
 	  ftcSoundBar.http_post( (char *) "api/track/play", jsonData );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -622,11 +753,15 @@ extern "C" {
   int setVolume(short volume) {
 	  // set volumne
 	  
+	  request_mutex();
+	  
 	  char jsonData[100];
 	  
 	  sprintf( jsonData, "{\"volume\": %hi}", volume );
 	  
 	  ftcSoundBar.http_post( (char *) "api/volume", jsonData );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -643,7 +778,11 @@ extern "C" {
   int stopTrack(short dummy) {
 	  // stops the actual track
 	  
+	  request_mutex();
+	  
 	  ftcSoundBar.http_post( (char *) "api/track/stop", (char *)"" );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -660,7 +799,11 @@ extern "C" {
   int pauseTrack(short dummy) {
 	  // pauses the actual track
 	  
+	  request_mutex();
+	  
 	  ftcSoundBar.http_post( (char *) "api/track/pause", (char *)"" );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -677,7 +820,11 @@ extern "C" {
   int resumeTrack(short dummy) {
 	  // continues the actual track
 	  
+	  request_mutex();
+	  
 	  ftcSoundBar.http_post( (char *) "api/track/resume", (char *)"" );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -694,7 +841,11 @@ extern "C" {
   int previous(short dummy) {
 	  // play previous track
 	  
+	  request_mutex();
+	  
 	  ftcSoundBar.http_post( (char *) "api/track/previous", (char *)"" );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -711,7 +862,11 @@ extern "C" {
   int next(short dummy) {
 	  // play next track
 	  
+	  request_mutex();
+	  
 	  ftcSoundBar.http_post( (char *) "api/track/next", (char *)"" );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -726,13 +881,17 @@ extern "C" {
    *		- FISH_OK
    */   
   int setMode(short mode) {
+	  
 	  // set mode: 0 - normal, 1 - shuffle, 2 - repeat
+	  request_mutex();
 	  
 	  char jsonData[100];
 	  
 	  sprintf( jsonData, "{\"mode\": %hi}", mode );
 	  
 	  ftcSoundBar.http_post( (char *) "api/mode", jsonData );
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -748,22 +907,28 @@ extern "C" {
    */   
   int getMode(short *mode)  {
 
-	  int status;
-	  JSON jsonData;
+	request_mutex();
+	
+	int status;
+	JSON jsonData;
 	  
-	  // http_get mode
-	  status = ftcSoundBar.http_get( (char *) "api/mode", &jsonData );
+	// http_get mode
+	status = ftcSoundBar.http_get( (char *) "api/mode", &jsonData );
 	  
-	  if ( status != 200 ) {
-		  return FISH_ERR;
-	  }
+	if ( status != 200 ) {
+		*mode = -1;
+		release_mutex();
+		return FISH_ERR;
+	}
 	  
-	  // get return value mode and test on error
-	  if ( 0 != jsonData.GetParam( (char *) "mode", mode ) ) {
-		  return FISH_ERR;
-	  }
-	  
-	  return FISH_OK;
+	// get return value mode and test on error
+	if ( 0 != jsonData.GetParam( (char *) "mode", mode ) ) {
+		release_mutex();
+		return FISH_ERR;
+	}
+	
+	release_mutex();
+	return FISH_OK;
 	  
   }
  
@@ -776,23 +941,30 @@ extern "C" {
    *		- FISH_OK
    */   
   int getTracks(short *tracks)  {
+	  
+	request_mutex();
+	  
+	int status;
+	JSON jsonData;
 
-	  int status;
-	  JSON jsonData;
+	// http_get tracks
+	status = ftcSoundBar.http_get( (char *) "api/tracks", &jsonData );
+
+	if ( status != 200 ) {
+		*tracks = -1;
+		release_mutex();
+		return FISH_ERR;
+	}
 	  
-	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
+	// get return value mode and test on error
+	if ( 0 != jsonData.GetParam( (char *) "tracks", tracks ) ) {
+		release_mutex();
+		 return FISH_ERR;
+	}
 	  
-	  if ( status != 200 ) {
-		  return FISH_ERR;
-	  }
-	  
-	  // get return value mode and test on error
-	  if ( 0 != jsonData.GetParam( (char *) "tracks", tracks ) ) {
-		  return FISH_ERR;
-	  }
-	  
-	  return FISH_OK;
+	release_mutex();
+
+	return FISH_OK;
 	  
   }  
 
@@ -806,20 +978,27 @@ extern "C" {
    */  
   int getActiveTrack(short *active_track)  {
 
+	  request_mutex();
+	  
 	  int status;
 	  JSON jsonData;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
+	  status = ftcSoundBar.http_get( (char *) "api/activeTrack", &jsonData );
 	  
 	  if ( status != 200 ) {
+		  *active_track = -1;
+		  release_mutex();
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
-	  if ( 0 != jsonData.GetParam( (char *) "active_track", active_track ) ) {
+	  if ( 0 != jsonData.GetParam( (char *) "activeTrack", active_track ) ) {
+		  release_mutex();
 		  return FISH_ERR;
 	  }
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -834,21 +1013,28 @@ extern "C" {
    *		- FISH_OK
    */
   int getTrackState(short *state)  {
-
+	  
+	  request_mutex();
+	  
 	  int status;
 	  JSON jsonData;
 	  
 	  // http_get tracks
-	  status = ftcSoundBar.http_get( (char *) "api/track", &jsonData );
-	  
+	  status = ftcSoundBar.http_get( (char *) "api/activeTrack", &jsonData );
+
 	  if ( status != 200 ) {
+		  *state = -1;
+		  release_mutex();
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
 	  if ( 0 != jsonData.GetParam( (char *) "state", state ) ) {
+		  release_mutex();
 		  return FISH_ERR;
 	  }
+	  
+	  release_mutex();
 	  
 	  return FISH_OK;
 	  
@@ -863,6 +1049,8 @@ extern "C" {
    *		- FISH_OK
    */
   int getVolume(short *volume)  {
+	 
+	  request_mutex();
 
 	  int status;
 	  JSON jsonData;
@@ -871,14 +1059,18 @@ extern "C" {
 	  status = ftcSoundBar.http_get( (char *) "api/volume", &jsonData );
 
 	  if ( status != 200 ) {
+		  *volume = -1;
+		  release_mutex();
 		  return FISH_ERR;
 	  }
 	  
 	  // get return value mode and test on error
 	  if ( 0 != jsonData.GetParam( (char *) "volume", volume ) ) {
+		  release_mutex();
 		  return FISH_ERR;
 	  }
 	  
+	  release_mutex();
 	  return FISH_OK;
 	  
   }

@@ -20,7 +20,7 @@
 
 FtcSoundBar::FtcSoundBar( ) {
 
-	ESP_LOGI(TAGFTCSOUNDBAR, "constructor" );
+	ESP_LOGD(TAGFTCSOUNDBAR, "constructor" );
 	xBlinky = NULL;
 
 	strcpy( WIFI_SSID, "YOUR_SSID");
@@ -50,6 +50,7 @@ void FtcSoundBar::writeConfigFile( char *configFile )
     fprintf( f, "WIFI_PASSWORD=%s\n", WIFI_PASSWORD);
     fprintf( f, "TXT_AP_MODE=%d\n", TXT_AP_MODE);
     fprintf( f, "I2C_MODE=%d\n", I2C_MODE);
+    fprintf( f, "DEBUG=%d\n", DEBUG);
     fprintf( f, "STARTUP_VOLUME=%d\n", STARTUP_VOLUME);
     fprintf( f, "HOSTNAME=%s\n", HOSTNAME);
 
@@ -102,6 +103,10 @@ void FtcSoundBar::readConfigFile( char *configFile )
     		} else if ( strcmp( key, "HOSTNAME" ) == 0 ) {
 
     			strcpy( HOSTNAME, value );
+
+    		} else if ( strcmp( key, "DEBUG" ) == 0 ) {
+
+    			DEBUG = atoi( value );
 
     		} else {
 

@@ -3,7 +3,7 @@
 # project subdirectory.
 #
 
-PROJECT_NAME := ftSoundBar
+PROJECT_NAME := ftcSoundBar
 
-include $(ADF_PATH)/project.mk
+include $(ADF_PATH)/make/project.mk
 

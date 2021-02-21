@@ -2,7 +2,7 @@
 //
 // ftcSoundBar arduino library
 //
-// Version 1.3
+// Version 1.31
 //
 // (C) 2021 Oliver Schmiel, Christian Bergschneider, Stefan Fuss
 //

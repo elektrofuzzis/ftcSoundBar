@@ -91,7 +91,7 @@ void PlayList::readDir( const char *directory ) {
     }
 
     for (int i=0; i<=maxTrack; i++) {
-    	ESP_LOGI(TAG, "track %d=%s", i, track[i]);
+    	ESP_LOGD(TAG, "track %d=%s", i, track[i]);
     }
 
 }
