@@ -47,7 +47,7 @@ Enter ```http://ftcSoundBar``` in your browser to access the webUI of the ftcSou
 
 |  |  |
 |---|---|
-| ![main view](./doc/img/webui.png){width=250} | ![settings view](./doc/img/setup.png){width=250} |
+| ![main view](./doc/img/webui.png) | ![settings view](./doc/img/setup.png) |
 
 Try to play some songs on the main view.
 
