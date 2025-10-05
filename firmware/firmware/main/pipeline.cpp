@@ -17,6 +17,7 @@
 #include "playlist.h"
 #include "pipeline.h"
 #include "adfcorrections.h"
+#include "driver/i2s_std.h"
 
 #define TAGPIPELINE "::PIPELINE"
 
@@ -49,7 +50,8 @@ void Pipeline::StartCodec(void) {
 	fatfs_stream_reader = fatfs_stream_init(&fatfs_cfg);
 
 	ESP_LOGD(TAGPIPELINE, "Create i2s stream to write data to codec chip");
-	i2s_stream_cfg_t i2s_cfg = _I2S_STREAM_CFG_DEFAULT();
+	// i2s_stream_cfg_t i2s_cfg = _I2S_STREAM_CFG_DEFAULT();
+	i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
 	i2s_cfg.type = AUDIO_STREAM_WRITER;
 	i2s_stream_writer = i2s_stream_init(&i2s_cfg);
 
@@ -190,7 +192,7 @@ bool Pipeline::isPlaying( void ) {
 	return (audio_element_get_state( i2s_stream_writer ) == AEL_STATE_RUNNING);
 }
 
-int Pipeline::getVolume( void ) {
+uint8_t Pipeline::getVolume( void ) {
 
 	int player_volume = 0;
 

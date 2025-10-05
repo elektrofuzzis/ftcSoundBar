@@ -8,7 +8,7 @@
 #ifndef MAIN_BLINK_H_
 #define MAIN_BLINK_H_
 
-#define BLINK_GPIO 22
+#define BLINK_GPIO GPIO_NUM_22
 
 void  blink( int highTime, int lowTime );
 

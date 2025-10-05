@@ -51,7 +51,7 @@ extern "C" {
     void app_main(void);
 }
 
-#define FIRMWARE_VERSION "v1.30"
+#define FIRMWARE_VERSION "v1.40"
 
 #define CONFIG_FILE "/sdcard/ftcSoundBar.conf"
 static const char *TAG = "ftcSoundBar";
@@ -60,8 +60,6 @@ static const char *TAG = "ftcSoundBar";
 
 static EventGroupHandle_t wifi_event_group;
 const int CONNECTED_BIT = BIT0;
-
-#define BLINK_GPIO 22
 
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + 128)
 #define SCRATCH_BUFSIZE (10240)
@@ -378,9 +376,14 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 	httpd_resp_sendstr_chunk_cr(req, line );
 
 	// IP Address
-	tcpip_adapter_ip_info_t myip;
-	tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &myip);
-	sprintf(line, "	<tr><td style=\"text-align:right\">ip-address:</td><td colspan=\"2\" style=\"text-align:left\">%s</td></tr>", ip4addr_ntoa(&(myip.ip)));
+	esp_netif_ip_info_t ip_info;
+	esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+	esp_netif_get_ip_info(netif, &ip_info);
+	sprintf(line, "	<tr><td style=\"text-align:right\">ip-address:</td><td colspan=\"2\" style=\"text-align:left\">" IPSTR "</td></tr>", IP2STR(&ip_info.ip) );
+	
+	// tcpip_adapter_ip_info_t myip;
+	// tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &myip);
+	// sprintf(line, "	<tr><td style=\"text-align:right\">ip-address:</td><td colspan=\"2\" style=\"text-align:left\">%s</td></tr>", ip4addr_ntoa(&(myip.ip)));
 	httpd_resp_sendstr_chunk_cr(req, line );
 
 	// startup Volume
@@ -581,8 +584,7 @@ static esp_err_t setup_html_get_handler(httpd_req_t *req )
 #define TAGAPI "::API"
 
  static esp_err_t tracks_get_handler(httpd_req_t *req)
- {	char tag[20];
-
+ {	
      ESP_LOGD( TAGAPI, "GET tracks" );
 
      httpd_resp_set_type(req, "application/json");
@@ -768,7 +770,7 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
 
     cJSON_Delete(root);
 
-    xTaskCreate(&task_reboot, "reboot", 512, NULL, 5, NULL );
+    xTaskCreate(&task_reboot, "reboot", 2048, NULL, 5, NULL );
 
     httpd_resp_sendstr(req, "Post control value successfully");
 
@@ -1035,48 +1037,125 @@ esp_err_t start_web_server( const char *base_path )
 
 #define TAGWIFI "WIFI"
 
-esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
+// esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
+	esp_netif_t *netif;
+	esp_netif_ip_info_t ip_info;
+	ip_event_got_ip_t* event;
+
 	ESP_LOGD(TAGWIFI, "wifi_event_handler");
 
-    switch(event->event_id) {
-    case SYSTEM_EVENT_STA_START:
-        ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_START");
+    switch(event_id) {
+
+    case WIFI_EVENT_STA_START:
+        
+		ESP_LOGD(TAGWIFI, "WIFI_EVENT_STA_START");
         ESP_ERROR_CHECK( esp_wifi_connect() );
-        ESP_ERROR_CHECK( tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, ftcSoundBar.HOSTNAME) );
+        // ESP_ERROR_CHECK( tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, ftcSoundBar.HOSTNAME) );
+		netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+		ESP_ERROR_CHECK(esp_netif_set_hostname(netif, ftcSoundBar.HOSTNAME));
 
     	// set static IP?
         if ( ftcSoundBar.TXT_AP_MODE) {
         	// DHCP off
-        	ESP_ERROR_CHECK( tcpip_adapter_dhcpc_stop(TCPIP_ADAPTER_IF_STA));
+        	// ESP_ERROR_CHECK( tcpip_adapter_dhcpc_stop(TCPIP_ADAPTER_IF_STA));
+			ESP_ERROR_CHECK(esp_netif_dhcpc_stop(netif));
 
         	// set 192.168.8.1
-        	tcpip_adapter_ip_info_t myip;
-        	IP4_ADDR( &myip.gw, 192,168,8,1 );
-        	IP4_ADDR( &myip.ip, 192,168,8,100 );
-        	IP4_ADDR( &myip.netmask, 255,255,255,0);
+        	// tcpip_adapter_ip_info_t myip;
+        	// IP4_ADDR( &myip.gw, 192,168,8,1 );
+        	// IP4_ADDR( &myip.ip, 192,168,8,100 );
+        	// IP4_ADDR( &myip.netmask, 255,255,255,0);
+        	// ESP_ERROR_CHECK( tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_STA, &myip));
 
-        	ESP_ERROR_CHECK( tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_STA, &myip));
+    		ip_info.ip.addr = esp_ip4addr_aton("192.168.8.100");
+			ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
+			ip_info.gw.addr = esp_ip4addr_aton("192.168.8.1");
+			ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip_info));
         }
 
         break;
-    case SYSTEM_EVENT_STA_GOT_IP:
-    	ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_GOT_IP");
-        ESP_LOGD(TAGWIFI, "Got IP: '%s'",
-                ip4addr_ntoa((ip4_addr_t*) &event->event_info.got_ip.ip_info.ip));
+
+    case IP_EVENT_STA_GOT_IP:
+    	ESP_LOGD(TAGWIFI, "IP_EVENT_STA_GOT_IP");
+
+        // ESP_LOGD(TAGWIFI, "Got IP: '%s'", ip4addr_ntoa((ip4_addr_t*) &event->event_info.got_ip.ip_info.ip));
+		event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAGWIFI, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+
         xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
         break;
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-        ESP_LOGD(TAGWIFI, "SYSTEM_EVENT_STA_DISCONNECTED");
+
+    case WIFI_EVENT_STA_DISCONNECTED:
+        ESP_LOGD(TAGWIFI, "WIFI_EVENT_STA_DISCONNECTED");
         ESP_ERROR_CHECK(esp_wifi_connect());
         break;
+
     default:
         break;
     }
 
-    return ESP_OK;
 }
 
+void init_wifi(void)
+{
+    // Initialisiere NVS (wird für Wi-Fi benötigt)
+    // ESP_ERROR_CHECK(nvs_flash_init()); erfolgt vorher
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // Event-Handler registrieren
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+
+    wifi_config_t wifi_config = {0};
+	memcpy( wifi_config.sta.ssid,     ftcSoundBar.WIFI_SSID, 32);
+    memcpy( wifi_config.sta.password, ftcSoundBar.WIFI_PASSWORD, 64);
+	wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+	wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+	wifi_config.sta.pmf_cfg.capable = true;
+	wifi_config.sta.pmf_cfg.required = false;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAGWIFI, "wifi_init_sta finished.");
+
+    // Warte auf Verbindung oder Fehlschlag
+    wifi_event_group = xEventGroupCreate();
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                           CONNECTED_BIT,
+                                           pdFALSE,
+                                           pdFALSE,
+                                           portMAX_DELAY);
+
+    if (bits & CONNECTED_BIT) {
+        ESP_LOGI(TAGWIFI, "Connected to AP SSID:%s", ftcSoundBar.WIFI_SSID);
+    } else {
+        ESP_LOGE(TAGWIFI, "UNEXPECTED EVENT");
+    }
+
+	mdns_init();
+	mdns_hostname_set( ftcSoundBar.HOSTNAME );
+
+}
+
+/*
 void init_wifi( void ) {
 
     wifi_event_group = xEventGroupCreate();
@@ -1103,7 +1182,7 @@ void init_wifi( void ) {
 	mdns_init();
 	mdns_hostname_set( ftcSoundBar.HOSTNAME );
 
-}
+}*/
 
 /******************************************************************
  *
@@ -1170,8 +1249,10 @@ static esp_err_t input_key_service_cb(periph_service_handle_t handle, periph_ser
 
 static esp_err_t i2c_slave_init(void)
 {
-    int i2c_slave_port = I2C_SLAVE_NUM;
-    i2c_config_t conf_slave;
+    i2c_port_t i2c_slave_port = I2C_SLAVE_NUM;
+    
+	/*
+	i2c_config_t conf_slave;
     conf_slave.sda_io_num = I2C_SLAVE_SDA_IO;
     conf_slave.sda_pullup_en = GPIO_PULLUP_ENABLE;
     conf_slave.scl_io_num = I2C_SLAVE_SCL_IO;
@@ -1179,8 +1260,25 @@ static esp_err_t i2c_slave_init(void)
     conf_slave.mode = I2C_MODE_SLAVE;
     conf_slave.slave.addr_10bit_en = 0;
     conf_slave.slave.slave_addr = I2C_SLAVE_ADDR;
+	*/
+
+	i2c_config_t conf_slave;
+        conf_slave.mode = I2C_MODE_SLAVE;
+        conf_slave.sda_io_num = I2C_SLAVE_SDA_IO;
+        conf_slave.scl_io_num = I2C_SLAVE_SCL_IO;
+        conf_slave.sda_pullup_en = GPIO_PULLUP_ENABLE;
+        conf_slave.scl_pullup_en = GPIO_PULLUP_ENABLE;
+		conf_slave.slave.addr_10bit_en = 0;
+		conf_slave.slave.slave_addr = I2C_SLAVE_ADDR;
+		conf_slave.slave.maximum_speed = 400000;
+		conf_slave.clk_flags = 0;
+
     i2c_param_config(i2c_slave_port, &conf_slave);
-    return i2c_driver_install(i2c_slave_port, conf_slave.mode, I2C_SLAVE_RX_BUF_LEN, I2C_SLAVE_TX_BUF_LEN, 0);
+    esp_err_t err = i2c_driver_install(i2c_slave_port, conf_slave.mode, I2C_SLAVE_RX_BUF_LEN, I2C_SLAVE_TX_BUF_LEN, 0);
+	if ( err == ESP_OK ) err = i2c_reset_tx_fifo( I2C_SLAVE_NUM ); 
+
+	return err;
+
 }
 
 static void disp_buf(uint8_t *buf, int len)
@@ -1213,14 +1311,21 @@ enum I2C_CMD {
 };
 
 
+void i2c_reply( uint8_t reply ) {
+
+	ESP_ERROR_CHECK( i2c_reset_tx_fifo( I2C_SLAVE_NUM ) ); 
+	i2c_slave_write_buffer(I2C_SLAVE_NUM, &reply, 1, 50 / portTICK_RATE_MS );
+
+}
+
+
 static void i2c_task(void)
 {
     int bytes_read = 0;
 
     uint8_t data[10];    // receive buffer
-    uint8_t result[10];  // write buffer
 
-   	bytes_read = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, 5, 0);
+   	bytes_read = i2c_slave_read_buffer(I2C_SLAVE_NUM, data, 5, 0 );
 
    	if (bytes_read > 0 ) {
    		ESP_LOGD(TAGI2C, "%d bytes read.", bytes_read);
@@ -1236,8 +1341,7 @@ static void i2c_task(void)
 			break;
     	case I2C_CMD_GET_VOLUME:
 			ESP_LOGD(TAGI2C, "get volume" );
-			result[0] = ftcSoundBar.pipeline.getVolume();
-			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			i2c_reply( ftcSoundBar.pipeline.getVolume() );
 			break;
     	case I2C_CMD_STOP_TRACK:
 			ESP_LOGD(TAGI2C, "stop" );
@@ -1257,34 +1361,27 @@ static void i2c_task(void)
 			break;
     	case I2C_CMD_GET_MODE:
 			ESP_LOGD(TAGI2C, "get mode" );
-			result[0] = ftcSoundBar.pipeline.getMode();
-			i2c_reset_tx_fifo(I2C_SLAVE_NUM);
-			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			i2c_reply( ftcSoundBar.pipeline.getMode() );
 			break;
     	case I2C_CMD_GET_TRACKS:
 			ESP_LOGD(TAGI2C, "get tacks");
-			result[0] = ftcSoundBar.pipeline.playList.getTracks();
-			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			i2c_reply( ftcSoundBar.pipeline.playList.getTracks() );
 			break;
     	case I2C_CMD_GET_ACTIVE_TRACK:
 			ESP_LOGD(TAGI2C, "get active track");
-			result[0] = ftcSoundBar.pipeline.playList.getActiveTrackNr();
-			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			i2c_reply( ftcSoundBar.pipeline.playList.getActiveTrackNr() );
 			break;
     	case I2C_CMD_GET_TRACK_STATE:
 			ESP_LOGD(TAGI2C, "get track state");
-			result[0] = ftcSoundBar.pipeline.getState();
-			i2c_slave_write_buffer(I2C_SLAVE_NUM, result, 1, 0);
+			i2c_reply( ftcSoundBar.pipeline.getState() );
 			break;
     	case I2C_CMD_NEXT:
 			ESP_LOGD(TAGI2C, "next");
 			ftcSoundBar.pipeline.playList.nextTrack();
-			ftcSoundBar.pipeline.play( );
 			break;
     	case I2C_CMD_PREVIOUS:
 			ESP_LOGD(TAGI2C, "previous");
 			ftcSoundBar.pipeline.playList.prevTrack();
-			ftcSoundBar.pipeline.play( );
 			break;
     	default:
     		ESP_LOGE(TAGI2C, "unkown cmd");
@@ -1309,18 +1406,19 @@ void app_main(void)
 	ESP_LOGI(TAG, "**********************************************************************************************");
 	ESP_LOGI(TAG, "");
 
-	xTaskCreate(&task_blinky, "blinky", 512, NULL, 5, &(ftcSoundBar.xBlinky) );
+	xTaskCreate(&task_blinky, "blinky", 2048, NULL, 5, &(ftcSoundBar.xBlinky) );
 
     nvs_flash_init();
 
     ESP_LOGI(TAG, "[1.0] Initialize peripherals management");
     esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
     esp_periph_set_handle_t set = esp_periph_set_init(&periph_cfg);
-    gpio_pad_select_gpio(BLINK_GPIO);
+
+	gpio_reset_pin(BLINK_GPIO);
+	gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
 
     ESP_LOGI(TAG, "[1.1] Initialize and start peripherals");
     audio_board_sdcard_init(set, SD_MODE_1_LINE);
-
 
     ESP_LOGI(TAG, "[1.2] Set up a sdcard playlist and scan sdcard music save to it");
     ftcSoundBar.pipeline.playList.readDir( "/sdcard" );
@@ -1333,7 +1431,8 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "[2.0] Initialize wifi" );
-    init_wifi();
+	if (ftcSoundBar.WIFI) init_wifi();
+	else ESP_LOGI(TAG, "     wifi is disabled.");
 
     ESP_LOGI(TAG, "[3.0] Start codec chip");
     ftcSoundBar.pipeline.StartCodec();
@@ -1362,7 +1461,8 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "[5.0] Start Web Server");
-    ESP_ERROR_CHECK( start_web_server( "localhost" ) );
+    if (ftcSoundBar.WIFI) ESP_ERROR_CHECK( start_web_server( "localhost" ) );
+	else ESP_LOGI(TAG, "     Web Server is disabled.");
 
     ESP_LOGI(TAG, "[6.0] Set volume");
     ftcSoundBar.pipeline.setVolume( ftcSoundBar.STARTUP_VOLUME );
@@ -1372,6 +1472,9 @@ void app_main(void)
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
     audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
     ftcSoundBar.pipeline.setListener( evt );
+
+	if ( ftcSoundBar.xBlinky != NULL ) { vTaskDelete( ftcSoundBar.xBlinky ); }
+	gpio_set_level(BLINK_GPIO, 1);
 
     // run forever
     while (1) {

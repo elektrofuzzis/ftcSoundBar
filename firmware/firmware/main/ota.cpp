@@ -11,6 +11,7 @@
 #include <esp_log.h>
 #include <string.h>
 #include <esp_peripherals.h>
+#include <esp_app_format.h>
 
 #include "ota.h"
 #include "blink.h"
@@ -39,11 +40,11 @@ void ota( const char *tag, const char *firmware )
     const esp_partition_t *running = esp_ota_get_running_partition();
 
     if (configured != running) {
-        ESP_LOGW(tag, "Configured OTA boot partition at offset 0x%08x, but running from offset 0x%08x",
+        ESP_LOGW(tag, "Configured OTA boot partition at offset 0x%08lx, but running from offset 0x%08lx",
                  configured->address, running->address);
         ESP_LOGW(tag, "(This can happen if either the OTA boot data or preferred boot image become corrupted somehow.)");
     }
-    ESP_LOGI(tag, "Running partition type %d subtype %d (offset 0x%08x)",
+    ESP_LOGI(tag, "Running partition type %d subtype %d (offset 0x%08lx)",
              running->type, running->subtype, running->address);
 
     FILE *f;
@@ -54,7 +55,7 @@ void ota( const char *tag, const char *firmware )
     }
 
     update_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_LOGI(tag, "Writing to partition subtype %d at offset 0x%x",
+    ESP_LOGI(tag, "Writing to partition subtype %d at offset 0x%lx",
              update_partition->subtype, update_partition->address);
     assert(update_partition != NULL);
 

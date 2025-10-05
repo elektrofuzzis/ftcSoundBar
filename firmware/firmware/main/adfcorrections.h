@@ -8,6 +8,7 @@
 #ifndef MAIN_ADFCORRECTIONS_H_
 #define MAIN_ADFCORRECTIONS_H_
 
+#include "driver/i2s_std.h"
 #include "input_key_service.h"
 
 

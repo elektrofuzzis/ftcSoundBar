@@ -48,7 +48,7 @@ public:
 	esp_err_t resume( void );
 	esp_err_t pause( void );
 	bool isPlaying( void );
-	int getVolume( void );
+	uint8_t getVolume( void );
 	void setVolume( int volume );
 	audio_element_state_t getState( void );
 	void setListener( audio_event_iface_handle_t evt );

@@ -19,6 +19,7 @@ public:
 	char WIFI_PASSWORD[64];
 	bool TXT_AP_MODE;
 	bool I2C_MODE;
+	bool WIFI;
 	bool DEBUG;
 	char HOSTNAME[64];
 	uint8_t STARTUP_VOLUME;

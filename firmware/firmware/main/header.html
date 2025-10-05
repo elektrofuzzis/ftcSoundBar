@@ -55,19 +55,19 @@ function showState( state, mode ) {
   	var repeat  = document.getElementById("repeat");
 	
 	switch( state ) {
-	case 2: // RUNNING
+	case 3: // RUNNING
 		play.style.color  = "#989898";
 		pause.style.color = "#383838";
   		stop.style.color  = "#383838";
 		error.style.color = "#383838";
 		break;
-	case 3: // PAUSED
+	case 4: // PAUSED
 		play.style.color  = "#383838";
 		pause.style.color = "#989898";
   		stop.style.color  = "#383838";
 		error.style.color = "#383838";
 		break;
-	case 6: // ERROR
+	case 7: // ERROR
 		play.style.color  = "#383838";
   		pause.style.color = "#383838";
   		stop.style.color  = "#383838";

@@ -46,7 +46,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "[1.1] Initialize and start peripherals");
     audio_board_sdcard_init(set, SD_MODE_1_LINE);
-    gpio_pad_select_gpio(BLINK_GPIO);
+    gpio_reset_pin(BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction((gpio_num_t)BLINK_GPIO, GPIO_MODE_OUTPUT);
 
