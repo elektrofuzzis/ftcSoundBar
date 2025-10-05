@@ -82,12 +82,12 @@ Shortcut for experienced users:
 
 | Option | Value | Description |
 |:------:|:-----:|-------------|
-| WIFI   | \[0|1\] | 1 - use wifi | 0 - shutdown wifi |
+| WIFI   | 0..1 | 1 - use wifi | 0 - shutdown wifi |
 | WIFI_SSID | <string> | SSID of your local wifi |
 | WIFI_PASSWORD | <string> | Password of your local wifi |
-| TXT_AP_MODE | \[0|1\] | In most cases 0<br>set it 1 to use the TXT AP option |
-| I2C_MODE | \[0|1\] | 0 - off <br> 1 - on |
-| DEBUG | \[0|1\] | In standard 0. 1 to get additional debug information in the console log. |
+| TXT_AP_MODE | 0..1 | In most cases 0<br>set it 1 to use the TXT AP option |
+| I2C_MODE | 0..1 | 0 - off <br> 1 - on |
+| DEBUG | 0..1 | In standard 0. 1 to get additional debug information in the console log. |
 | STARTUP_VOLUME | 0..100 | Speaker volume after reseting the device. |
 | HOSTNAME | <string> | Set a different hostname than ftcSoundBar. Just needed to run 2 devices in the same wifi |
 
