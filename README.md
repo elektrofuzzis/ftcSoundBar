@@ -45,9 +45,7 @@ The devices starts, the green LED between CPU and DIP switched will start flashi
 
 Enter ```http://ftcSoundBar``` in your browser to access the webUI of the ftcSoundBar. Using the marked setup- and ftcSoundBar icons you can flip between the main and the configuration view:
 
-|  |  |
-|---|---|
-| ![main view](./doc/img/webui.png) | ![settings view](./doc/img/setup.png) |
+![main view](./doc/img/ui.png)
 
 Try to play some songs on the main view.
 
